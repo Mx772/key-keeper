@@ -32,6 +32,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     }
     overlays.extend(cart_bauble(s, sess, detail_open, k));
     confirm_dialog(sess, k, overlays);
+    super::match_review::dialog(s, sess, k, overlays);
     shortcuts::dialog(sess, k, overlays);
     body
 }

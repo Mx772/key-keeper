@@ -411,3 +411,49 @@ pub fn offer_update(s: &mut AppState) {
     s.updates.status = crate::update_actions::CheckStatus::Available(version);
     s.updates.available = Some(r);
 }
+
+/// A match review with a few unmatched keys, for screenshots.
+pub fn match_review(s: &mut AppState) {
+    use crate::steam_actions::{MatchReview, ReviewRow};
+    use keykeeper_steam::AppMatch;
+    let Some(x) = s.session_mut() else { return };
+    let ids: Vec<uuid::Uuid> = x.rows.iter().take(3).copied().collect();
+    let m = |app_id: u32, name: &str| AppMatch {
+        app_id,
+        name: name.into(),
+    };
+    let rows = vec![
+        (
+            "Doom",
+            vec![
+                m(379720, "DOOM"),
+                m(2280, "Ultimate Doom"),
+                m(782330, "DOOM Eternal"),
+            ],
+            Some(379720),
+        ),
+        (
+            "Hitman Trilogy",
+            vec![
+                m(1659040, "HITMAN World of Assassination"),
+                m(236870, "HITMAN™"),
+            ],
+            None,
+        ),
+        ("Mystery Game (Steam key)", Vec::new(), None),
+    ];
+    x.match_review = Some(MatchReview {
+        rows: rows
+            .into_iter()
+            .zip(ids)
+            .map(|((name, matches, chosen), id)| ReviewRow {
+                key_ids: vec![id],
+                name: name.into(),
+                term: rune::TextEdit::new(name),
+                matches,
+                chosen,
+            })
+            .collect(),
+        open: None,
+    });
+}

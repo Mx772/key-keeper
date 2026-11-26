@@ -77,6 +77,8 @@ pub struct LibraryLayout {
     pub view: LibraryView,
     pub density: Density,
     pub group_by_bundle: bool,
+    /// Group by source instead (never both).
+    pub group_by_source: bool,
     pub hidden_columns: Vec<String>,
     pub column_widths: BTreeMap<String, f32>,
     pub column_order: Vec<String>,
@@ -90,8 +92,9 @@ impl Default for LibraryLayout {
             view: LibraryView::default(),
             density: Density::default(),
             group_by_bundle: false,
+            group_by_source: false,
             // The date added is the default sort; the column itself is optional.
-            hidden_columns: vec!["added".into()],
+            hidden_columns: vec!["added".into(), "source".into()],
             column_widths: BTreeMap::new(),
             column_order: Vec::new(),
             sort: None,
@@ -118,12 +121,42 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("vault.kkvault"))
     }
 
-    /// A missing or unreadable file gives the defaults; config is never worth refusing to start over.
+    /// `%APPDATA%\KeyKeeper\data\logs` on Windows.
+    pub fn log_dir() -> Option<PathBuf> {
+        dirs().map(|d| d.data_dir().join("logs"))
+    }
+
+    /// A missing or unreadable file gives the defaults; config is never worth refusing to start
+    /// over. A file that doesn't parse is first copied to `config.toml.bad`, so the settings in
+    /// it aren't lost when the defaults are saved over it.
     pub fn load(path: &Path) -> Config {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Config::default();
+        };
+        match toml::from_str(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                let mut bad = path.as_os_str().to_owned();
+                bad.push(".bad");
+                let _ = std::fs::write(&bad, &text);
+                // Most likely a layout from another version: keep everything else.
+                let salvaged = text.parse::<toml::Table>().ok().and_then(|mut t| {
+                    t.remove("library");
+                    t.remove("window");
+                    Config::deserialize(t).ok()
+                });
+                log::error!(
+                    "config.toml couldn't be read ({}); {}, old file kept as config.toml.bad",
+                    e.message().trim(),
+                    if salvaged.is_some() {
+                        "reset the library layout"
+                    } else {
+                        "using defaults"
+                    }
+                );
+                salvaged.unwrap_or_default()
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -200,6 +233,7 @@ mod tests {
                 view: LibraryView::Grid,
                 density: Density::Compact,
                 group_by_bundle: true,
+                group_by_source: false,
                 hidden_columns: vec!["platform".into()],
                 column_widths: [("key".to_string(), 180.0)].into_iter().collect(),
                 column_order: vec!["name".into(), "status".into()],
@@ -242,5 +276,21 @@ mod tests {
         assert_eq!(Config::load(&path), Config::default());
         std::fs::write(&path, "theme = \"no-such-theme\"").unwrap();
         assert_eq!(Config::load(&path).theme(), ThemeId::Midnight);
+    }
+
+    #[test]
+    fn a_bad_layout_keeps_the_rest_and_a_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = "theme = \"forest\"
+[library]
+view = \"carousel\"
+";
+        std::fs::write(&path, text).unwrap();
+        let c = Config::load(&path);
+        assert_eq!(c.theme(), ThemeId::Forest);
+        assert_eq!(c.library, LibraryLayout::default());
+        let bad = std::fs::read_to_string(dir.path().join("config.toml.bad")).unwrap();
+        assert_eq!(bad, text);
     }
 }

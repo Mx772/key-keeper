@@ -8,8 +8,8 @@ use std::time::Duration;
 use jiff::civil::Date;
 use keykeeper_core::import::{self, Field, ImportOptions, ImportPreview, Table};
 use keykeeper_core::{
-    DateFormat, KdfParams, KeyStatus, Query, Repo, Settings, Sort, SortDir, SortField, Vault,
-    VaultData, VaultError, export,
+    DateFormat, KdfParams, KeyStatus, LabelField, Query, Repo, Settings, Sort, SortDir, SortField,
+    Vault, VaultData, VaultError, export,
 };
 use rune::{FileDialogOptions, KeyEvent, TextEdit, Tx};
 use rune_kit::TableState;
@@ -181,6 +181,7 @@ pub struct Session {
     /// Ids of `display`'s rows, for the table.
     pub row_ids: Vec<String>,
     pub group_by_bundle: bool,
+    pub group_by_source: bool,
     /// Bundles folded shut while grouping.
     pub collapsed: std::collections::HashSet<String>,
     /// The library's View menu, its Columns submenu, and the column menu on a header.
@@ -207,6 +208,8 @@ pub struct Session {
     pub selected_trade: Option<Uuid>,
     pub templates_ui: TemplatesUi,
     pub candidates: Option<Candidates>,
+    /// "Match on Steam" results without an exact match, for the user to pick from.
+    pub match_review: Option<crate::steam_actions::MatchReview>,
     pub steam_ui: SteamUi,
     pub missing_app_id: bool,
     /// Filters: spares of games I own on Steam, and games with several keys.
@@ -253,6 +256,7 @@ impl Session {
             display: Vec::new(),
             row_ids: Vec::new(),
             group_by_bundle: false,
+            group_by_source: false,
             collapsed: std::collections::HashSet::new(),
             view_menu: false,
             steam_menu: false,
@@ -272,6 +276,7 @@ impl Session {
             selected_trade: None,
             templates_ui: TemplatesUi::from(&templates),
             candidates: None,
+            match_review: None,
             steam_ui,
             missing_app_id: false,
             trade_fodder: false,
@@ -405,6 +410,10 @@ pub struct AppState {
     pub offline: bool,
     /// The window's last laid-out size and maximized state, saved on close.
     pub window_seen: std::cell::Cell<Option<crate::config::WindowSize>>,
+    /// Settings → Diagnostics shows the recent log lines.
+    pub show_log: bool,
+    /// The match review's open dropdown (one at a time; `MatchReview::open` says which row).
+    pub match_combo: rune_kit::ComboboxState,
 }
 
 /// The pointer is resting on a game's name (or grid card).
@@ -449,6 +458,8 @@ impl AppState {
             hover: None,
             offline: false,
             window_seen: std::cell::Cell::new(None),
+            match_combo: rune_kit::ComboboxState::default(),
+            show_log: false,
         }
     }
 
@@ -535,7 +546,9 @@ impl AppState {
     }
 
     pub fn toast_error(&mut self, title: impl Into<String>, detail: impl Into<String>) {
-        self.push_toast(title.into(), Some(detail.into()), true);
+        let (title, detail) = (title.into(), detail.into());
+        log::warn!("{title}: {}", detail.replace('\n', " | "));
+        self.push_toast(title, Some(detail), true);
     }
 
     fn push_toast(&mut self, title: String, detail: Option<String>, error: bool) {
@@ -817,8 +830,8 @@ impl AppState {
         self.last_activity = tx.clock().max(self.now);
     }
 
-    /// Window closing: flush unsaved changes and clear a copied key.
-    pub fn on_close(&mut self, tx: &mut Tx) {
+    /// Write a pending layout change and the window's size to config.toml now.
+    pub(crate) fn flush_config(&mut self) {
         let window = self.window_seen.get().filter(|_| !self.offline);
         if self.layout_save_at.take().is_some()
             || (window.is_some() && window != self.config.window)
@@ -828,6 +841,11 @@ impl AppState {
             }
             self.save_config();
         }
+    }
+
+    /// Window closing: flush unsaved changes and clear a copied key.
+    pub fn on_close(&mut self, tx: &mut Tx) {
+        self.flush_config();
         if let Screen::Unlocked(s) = &mut self.screen {
             s.sync_trade_form();
             if s.is_dirty() {
@@ -929,7 +947,14 @@ impl AppState {
         }
         let message = match form.target {
             None => {
-                let k = form.to_new_key(fmt);
+                let mut k = form.to_new_key(fmt);
+                let keys = s.repo.keys();
+                k.bundle = k
+                    .bundle
+                    .map(|b| keykeeper_core::canonical_label(keys, LabelField::Bundle, &b));
+                k.source = k
+                    .source
+                    .map(|b| keykeeper_core::canonical_label(keys, LabelField::Source, &b));
                 if let Some(existing) = s.repo.find_by_key(k.key.expose()) {
                     let name = existing.game_name.clone();
                     self.toast_error(
@@ -946,7 +971,20 @@ impl AppState {
             }
             Some(id) => {
                 let form = form.clone();
-                match s.repo.update_key(id, |k| form.apply(k, fmt)) {
+                let keys = s.repo.keys();
+                let (bundle, source) = (
+                    form.bundle.text.trim().to_string(),
+                    form.source.text.trim().to_string(),
+                );
+                let bundle = (!bundle.is_empty())
+                    .then(|| keykeeper_core::canonical_label(keys, LabelField::Bundle, &bundle));
+                let source = (!source.is_empty())
+                    .then(|| keykeeper_core::canonical_label(keys, LabelField::Source, &source));
+                match s.repo.update_key(id, |k| {
+                    form.apply(k, fmt);
+                    k.bundle = bundle;
+                    k.source = source;
+                }) {
                     Ok(true) => {
                         s.form = s.repo.key(id).map(|k| KeyForm::from_key(k, fmt));
                         "Saved".to_string()
@@ -1355,6 +1393,36 @@ impl AppState {
                 Err(e) => s.toast_error("Export failed", e.to_string()),
             }
         });
+    }
+
+    /// Save the activity log (keys and API keys are never in it) to a file of the user's choice.
+    pub fn export_log(&mut self, tx: &mut Tx) {
+        let options = FileDialogOptions {
+            title: "Export log".into(),
+            file_name: Some(format!("keykeeper-log-{}.txt", today())),
+            ..Default::default()
+        }
+        .filter("Text", &["txt", "log"]);
+        tx.save_file(options, |s: &mut AppState, result, _| {
+            let Ok(Some(path)) = result else { return };
+            match std::fs::write(&path, crate::logging::full_text()) {
+                Ok(()) => s.toast(format!("Log saved to {}", path.display())),
+                Err(e) => s.toast_error("Couldn't save the log", e.to_string()),
+            }
+        });
+    }
+
+    pub fn open_log_folder(&mut self, tx: &mut Tx) {
+        let Some(p) = crate::logging::path() else {
+            self.toast_error(
+                "No log file",
+                "The log is only kept in memory this session.",
+            );
+            return;
+        };
+        if let Err(e) = tx.reveal_path(&p) {
+            self.toast_error("Couldn't open the log folder", e.to_string());
+        }
     }
 
     pub fn export_backup(&mut self, tx: &mut Tx) {

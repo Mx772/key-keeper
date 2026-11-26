@@ -480,8 +480,74 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(prices)
                 .child(security)
                 .child(export)
-                .child(super::update::settings_card(s, k)),
+                .child(super::update::settings_card(s, k))
+                .child(diagnostics(s, k)),
         )
+}
+
+/// The activity log: recent lines, export, and the folder it lives in.
+fn diagnostics(s: &AppState, k: &Kit) -> El {
+    let lines = crate::logging::recent(if s.show_log { 120 } else { 0 });
+    let mut body = col()
+        .gap(14.0)
+        .child(
+            muted(
+                k,
+                "KeyKeeper logs what its Steam and price lookups do (requests, rate limits, errors) so you can see why something is slow or failed. Keys and API keys are never logged.",
+            )
+            .wrap(),
+        );
+    if let Some(p) = crate::logging::path() {
+        body = body.child(
+            muted(k, format!("Log file: {}", p.display()))
+                .key("log-path")
+                .wrap(),
+        );
+    }
+    body = body.child(
+        hstack()
+            .child(primary(k, "log-export", "Export log…", true, |s, tx| {
+                s.export_log(tx)
+            }))
+            .child(
+                el().key("log-folder").child(
+                    Button::new("Open log folder")
+                        .variant(ButtonVariant::Outline)
+                        .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.open_log_folder(tx))
+                        .build(k),
+                ),
+            )
+            .child(
+                el().key("log-toggle").child(
+                    Button::new(if s.show_log {
+                        "Hide recent activity"
+                    } else {
+                        "Show recent activity"
+                    })
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut AppState| s.show_log = !s.show_log)
+                    .build(k),
+                ),
+            ),
+    );
+    if s.show_log {
+        let text = if lines.is_empty() {
+            "Nothing logged yet.".to_string()
+        } else {
+            lines.join(
+                "
+",
+            )
+        };
+        body = body.child(
+            el().key("log-recent")
+                .w_full()
+                .max_h(320.0)
+                .scroll(ScrollSpec::default())
+                .child(super::cart::text_block(k, "log-lines", text)),
+        );
+    }
+    card(k, "settings-diagnostics", "Diagnostics", body)
 }
 
 /// Hover card, store details and the artwork cache.

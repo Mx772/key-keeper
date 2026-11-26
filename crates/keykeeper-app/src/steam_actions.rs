@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use jiff::{SignedDuration, Timestamp};
 use keykeeper_core::{GameKey, Ownership, Secret, SteamMeta, SteamRating};
-use keykeeper_steam::{AppMatch, MatchOutcome, Review, SteamApi, SteamError, best_match};
+use keykeeper_steam::{
+    AppMatch, MatchOutcome, Partial, Progress, Review, SteamApi, SteamError, best_match,
+};
 use rune::TextEdit;
 use uuid::Uuid;
 
@@ -14,6 +16,24 @@ use crate::app::AppState;
 
 /// Ratings older than this are refreshed by "Refresh ratings".
 pub const RATING_MAX_AGE_DAYS: i64 = 7;
+/// A library-wide "Match on Steam" skips keys searched this recently without an exact match.
+pub const MATCH_RETRY_DAYS: i64 = 14;
+
+/// Keys "Match on Steam" couldn't match exactly, for the user to pick the right game.
+pub struct MatchReview {
+    pub rows: Vec<ReviewRow>,
+    /// The row whose dropdown is open (it uses `AppState::match_combo`).
+    pub open: Option<usize>,
+}
+
+pub struct ReviewRow {
+    pub key_ids: Vec<Uuid>,
+    pub name: String,
+    /// What to search Steam for, starting with the key's name.
+    pub term: TextEdit,
+    pub matches: Vec<AppMatch>,
+    pub chosen: Option<u32>,
+}
 
 pub enum JobDone {
     Search {
@@ -21,11 +41,18 @@ pub enum JobDone {
         result: Result<Vec<AppMatch>, SteamError>,
     },
     Match {
-        results: Vec<(Uuid, MatchOutcome)>,
+        results: Vec<(Vec<Uuid>, String, MatchOutcome)>,
         error: Option<SteamError>,
+        skipped: usize,
+    },
+    /// A search from the match review: row `row`, for `term`.
+    ReviewSearch {
+        row: usize,
+        term: String,
+        result: Result<Vec<AppMatch>, SteamError>,
     },
     Ratings {
-        result: Result<Vec<Review>, SteamError>,
+        result: Result<Partial<Review>, SteamError>,
     },
     Ownership {
         steam_id: Result<u64, SteamError>,
@@ -33,23 +60,65 @@ pub enum JobDone {
         owned: Option<Result<Vec<u32>, SteamError>>,
     },
     Prices(crate::price_actions::PricesDone),
+    /// Several results from one job, applied in order.
+    Many(Vec<JobDone>),
+}
+
+/// A running job's progress, shared with its thread: items done and what it's doing now.
+#[derive(Default)]
+pub struct JobProgress {
+    done: AtomicUsize,
+    note: Mutex<Option<String>>,
+}
+
+impl JobProgress {
+    pub fn done(&self) -> usize {
+        self.done.load(Ordering::Relaxed)
+    }
+
+    /// Start counting again (a job with several passes over the same items).
+    pub fn restart(&self) {
+        self.done.store(0, Ordering::Relaxed);
+    }
+
+    pub fn current_note(&self) -> Option<String> {
+        self.note.lock().ok()?.clone()
+    }
+}
+
+impl Progress for JobProgress {
+    fn advance(&self, n: usize) {
+        self.done.fetch_add(n, Ordering::Relaxed);
+    }
+
+    fn note(&self, what: &str) {
+        if let Ok(mut n) = self.note.lock() {
+            *n = Some(what.to_string());
+        }
+    }
 }
 
 /// The job currently running, for progress display.
 pub struct Job {
     pub label: &'static str,
-    pub done: Arc<AtomicUsize>,
+    pub progress: Arc<JobProgress>,
     pub total: usize,
 }
 
 impl Job {
     pub fn progress(&self) -> String {
-        let d = self.done.load(Ordering::Relaxed).min(self.total);
-        if self.total > 1 {
-            format!("{} {d}/{}…", self.label, self.total)
+        let d = self.progress.done().min(self.total);
+        let mut out = if self.total > 1 {
+            format!("{} {d}/{}", self.label, self.total)
         } else {
-            format!("{}…", self.label)
+            self.label.to_string()
+        };
+        if let Some(n) = self.progress.current_note() {
+            out.push_str(" · ");
+            out.push_str(&n);
         }
+        out.push('…');
+        out
     }
 }
 
@@ -92,23 +161,33 @@ impl AppState {
         &mut self,
         label: &'static str,
         total: usize,
-        work: impl FnOnce(&dyn SteamApi, &AtomicUsize) -> JobDone + Send + 'static,
+        work: impl FnOnce(&dyn SteamApi, &JobProgress) -> JobDone + Send + 'static,
     ) {
         if self.job.is_some() {
             self.toast("A Steam task is already running");
             return;
         }
-        let done = Arc::new(AtomicUsize::new(0));
+        let progress = Arc::new(JobProgress::default());
         let (api, slot, waker, counter) = (
             self.steam.clone(),
             self.jobs.clone(),
             self.waker.clone(),
-            done.clone(),
+            progress.clone(),
+        );
+        log::info!(
+            "{label}: started ({total} item{})",
+            if total == 1 { "" } else { "s" }
         );
         let spawned = std::thread::Builder::new()
             .name("keykeeper-steam".into())
             .spawn(move || {
+                let started = std::time::Instant::now();
                 let result = work(api.as_ref(), &counter);
+                log::info!(
+                    "{label}: finished in {:.1} s ({} done)",
+                    started.elapsed().as_secs_f64(),
+                    counter.done()
+                );
                 if let Ok(mut s) = slot.lock() {
                     s.push(result);
                 }
@@ -117,7 +196,13 @@ impl AppState {
                 }
             });
         match spawned {
-            Ok(_) => self.job = Some(Job { label, done, total }),
+            Ok(_) => {
+                self.job = Some(Job {
+                    label,
+                    progress,
+                    total,
+                })
+            }
             Err(e) => self.toast_error("Couldn't start the Steam task", e.to_string()),
         }
     }
@@ -136,42 +221,157 @@ impl AppState {
         }
         self.spawn_job("Searching Steam", 1, move |api, n| {
             let result = api.search(&name);
-            n.fetch_add(1, Ordering::Relaxed);
+            n.advance(1);
             JobDone::Search { key_id, result }
         });
     }
 
     /// Match every key in `ids` that has no Steam app id (all such keys when `ids` is empty).
+    /// Keys with the same game name share one search. Library-wide, keys searched in the last
+    /// [`MATCH_RETRY_DAYS`] without an exact match are skipped; picking them retries them.
     pub fn match_missing(&mut self, ids: &[Uuid]) {
         let Some(s) = self.session() else { return };
-        let todo: Vec<(Uuid, String)> = s
-            .repo
-            .keys()
-            .iter()
-            .filter(|k| k.steam_app_id.is_none() && (ids.is_empty() || ids.contains(&k.id)))
-            .map(|k| (k.id, k.game_name.clone()))
-            .collect();
+        let recent = Timestamp::now() - SignedDuration::from_hours(24 * MATCH_RETRY_DAYS);
+        let mut skipped = 0;
+        let mut todo: Vec<(Vec<Uuid>, String)> = Vec::new();
+        let mut by_title: std::collections::HashMap<String, usize> = Default::default();
+        for k in s.repo.keys() {
+            if k.steam_app_id.is_some() || !(ids.is_empty() || ids.contains(&k.id)) {
+                continue;
+            }
+            if ids.is_empty() && k.steam_searched_at.is_some_and(|t| t > recent) {
+                skipped += 1;
+                continue;
+            }
+            let norm = keykeeper_steam::normalize_title(&k.game_name);
+            match by_title.get(&norm) {
+                Some(i) => todo[*i].0.push(k.id),
+                None => {
+                    by_title.insert(norm, todo.len());
+                    todo.push((vec![k.id], k.game_name.clone()));
+                }
+            }
+        }
         if todo.is_empty() {
-            self.toast("Every key already has a Steam app id");
+            if skipped > 0 {
+                self.toast_error(
+                    format!("Skipped {skipped} keys searched recently without an exact match"),
+                    "Select them in the library and use Match on Steam to search again.",
+                );
+            } else {
+                self.toast("Every key already has a Steam app id");
+            }
             return;
         }
         let total = todo.len();
         self.spawn_job("Matching on Steam", total, move |api, n| {
             let mut results = Vec::new();
             let mut error = None;
-            for (id, name) in todo {
+            for (ids, name) in todo {
                 match api.search(&name) {
-                    Ok(found) => results.push((id, best_match(&name, &found))),
+                    Ok(found) => results.push((ids, name.clone(), best_match(&name, &found))),
                     Err(e @ (SteamError::RateLimited | SteamError::Network(_))) => {
                         error = Some(e);
                         break;
                     }
-                    Err(_) => results.push((id, MatchOutcome::None)),
+                    Err(e) => {
+                        log::warn!("search for a key failed: {e}");
+                        results.push((ids, name, MatchOutcome::None));
+                    }
                 }
-                n.fetch_add(1, Ordering::Relaxed);
+                n.advance(1);
             }
-            JobDone::Match { results, error }
+            JobDone::Match {
+                results,
+                error,
+                skipped,
+            }
         });
+    }
+
+    /// Search Steam again for a review row, with its (edited) search term.
+    pub fn review_search(&mut self, row: usize) {
+        let Some(term) = self
+            .session()
+            .and_then(|s| s.match_review.as_ref())
+            .and_then(|r| r.rows.get(row))
+            .map(|r| r.term.text.trim().to_string())
+            .filter(|t| !t.is_empty())
+        else {
+            return;
+        };
+        self.match_combo.close();
+        if let Some(r) = self.session_mut().and_then(|s| s.match_review.as_mut()) {
+            r.open = None;
+        }
+        self.spawn_job("Searching Steam", 1, move |api, n| {
+            let result = api.search(&term);
+            n.advance(1);
+            JobDone::ReviewSearch { row, term, result }
+        });
+    }
+
+    pub fn review_choose(&mut self, row: usize, choice: &str) {
+        self.match_combo.close();
+        if let Some(r) = self.session_mut().and_then(|s| s.match_review.as_mut()) {
+            r.open = None;
+            if let Some(x) = r.rows.get_mut(row) {
+                x.chosen = choice.parse().ok();
+            }
+        }
+    }
+
+    /// The combobox state for review row `row`, making it the open one.
+    pub fn review_combo(&mut self, row: usize) -> &mut rune_kit::ComboboxState {
+        let switched = match self.session_mut().and_then(|s| s.match_review.as_mut()) {
+            Some(r) if r.open != Some(row) => {
+                r.open = Some(row);
+                true
+            }
+            _ => false,
+        };
+        if switched {
+            self.match_combo.close();
+        }
+        &mut self.match_combo
+    }
+
+    /// Give every row with a chosen game its app id, as one undo step.
+    pub fn apply_review(&mut self) {
+        self.match_combo.close();
+        let Some(s) = self.session_mut() else { return };
+        let Some(review) = s.match_review.take() else {
+            return;
+        };
+        let fmt = s.date_format();
+        let mut keys = Vec::new();
+        for row in &review.rows {
+            let Some(app) = row.chosen else { continue };
+            for id in &row.key_ids {
+                if let Some(k) = s.repo.key(*id) {
+                    let mut k = k.clone();
+                    k.steam_app_id = Some(app);
+                    k.steam_searched_at = None;
+                    keys.push(k);
+                }
+            }
+        }
+        let n = keys.len();
+        if n == 0 {
+            return;
+        }
+        s.repo
+            .apply_changes("Match on Steam (picked)", keys, Vec::new(), &[]);
+        refresh_open_form(s, fmt);
+        self.toast(format!("Matched {n} key{}", if n == 1 { "" } else { "s" }));
+        self.refresh_ratings(false);
+    }
+
+    pub fn close_review(&mut self) {
+        self.match_combo.close();
+        if let Some(s) = self.session_mut() {
+            s.match_review = None;
+        }
     }
 
     /// Fetch review scores for keys with an app id; `force` ignores the 7-day cache.
@@ -200,8 +400,7 @@ impl AppState {
         }
         let total = apps.len();
         self.spawn_job("Fetching ratings", total, move |api, n| {
-            let result = api.reviews(&apps);
-            n.store(total, Ordering::Relaxed);
+            let result = api.reviews(&apps, n);
             JobDone::Ratings { result }
         });
     }
@@ -245,7 +444,7 @@ impl AppState {
                 ),
                 Err(_) => (None, None),
             };
-            n.fetch_add(1, Ordering::Relaxed);
+            n.advance(1);
             JobDone::Ownership {
                 steam_id,
                 wishlist,
@@ -292,6 +491,12 @@ impl AppState {
     fn apply_job(&mut self, done: JobDone) {
         let done = match done {
             JobDone::Prices(p) => return self.apply_prices(p),
+            JobDone::Many(list) => {
+                for d in list {
+                    self.apply_job(d);
+                }
+                return;
+            }
             d => d,
         };
         let Some(s) = self.session_mut() else { return };
@@ -319,45 +524,102 @@ impl AppState {
                     }
                 }
             },
-            JobDone::Match { results, error } => {
+            JobDone::Match {
+                results,
+                error,
+                skipped,
+            } => {
+                let now = Timestamp::now();
                 let mut keys = Vec::new();
-                let mut unsure = 0;
-                for (id, outcome) in results {
-                    match outcome {
-                        MatchOutcome::Exact(m) => {
-                            if let Some(k) = s.repo.key(id).filter(|k| k.steam_app_id.is_none()) {
-                                let mut k = k.clone();
-                                k.steam_app_id = Some(m.app_id);
-                                keys.push(k);
+                let mut matched = 0;
+                let mut rows = Vec::new();
+                for (ids, name, outcome) in results {
+                    let (app, matches) = match outcome {
+                        MatchOutcome::Exact(m) => (Some(m.app_id), Vec::new()),
+                        MatchOutcome::Ambiguous(m) => (None, m),
+                        MatchOutcome::None => (None, Vec::new()),
+                    };
+                    let mut row_ids = Vec::new();
+                    for id in &ids {
+                        let Some(k) = s.repo.key(*id).filter(|k| k.steam_app_id.is_none()) else {
+                            continue;
+                        };
+                        let mut k = k.clone();
+                        match app {
+                            Some(a) => {
+                                k.steam_app_id = Some(a);
+                                k.steam_searched_at = None;
+                                matched += 1;
+                            }
+                            None => {
+                                k.steam_searched_at = Some(now);
+                                row_ids.push(k.id);
                             }
                         }
-                        _ => unsure += 1,
+                        keys.push(k);
+                    }
+                    if app.is_none() && !row_ids.is_empty() {
+                        rows.push(ReviewRow {
+                            key_ids: row_ids,
+                            term: TextEdit::new(name.clone()),
+                            name,
+                            chosen: None,
+                            matches,
+                        });
                     }
                 }
-                let matched = keys.len();
+                let unsure = rows.iter().map(|r| r.key_ids.len()).sum::<usize>();
                 s.repo
                     .apply_changes("Match on Steam", keys, Vec::new(), &[]);
                 refresh_open_form(s, fmt);
+                log::info!(
+                    "Match on Steam: {matched} matched, {unsure} to pick, {skipped} skipped"
+                );
                 let mut msg = format!(
                     "Matched {matched} key{}",
                     if matched == 1 { "" } else { "s" }
                 );
                 if unsure > 0 {
-                    msg.push_str(&format!(
-                        ", {unsure} need a manual pick (filter \"No Steam id\")"
-                    ));
+                    msg.push_str(&format!(", {unsure} to pick by hand"));
+                }
+                if skipped > 0 {
+                    msg.push_str(&format!(", {skipped} skipped (searched recently)"));
+                }
+                if !rows.is_empty() {
+                    s.match_review = Some(MatchReview { rows, open: None });
                 }
                 match error {
-                    Some(e) => self.toast_error(msg, e.to_string()),
+                    Some(e) => self.toast_error(
+                        msg,
+                        format!("Stopped early: {e}. Run Match on Steam again later for the rest."),
+                    ),
                     None => self.toast(msg),
                 }
                 if matched > 0 {
                     self.refresh_ratings(false);
                 }
             }
+            JobDone::ReviewSearch { row, term, result } => match result {
+                Err(e) => self.toast_error("Steam search failed", e.to_string()),
+                Ok(found) => {
+                    if let Some(r) = s.match_review.as_mut().and_then(|r| r.rows.get_mut(row)) {
+                        r.chosen = match best_match(&term, &found) {
+                            MatchOutcome::Exact(m) => Some(m.app_id),
+                            _ => None,
+                        };
+                        r.matches = found;
+                        if r.matches.is_empty() {
+                            self.toast(format!("No Steam results for \"{term}\""));
+                        }
+                    }
+                }
+            },
             JobDone::Ratings { result } => match result {
                 Err(e) => self.toast_error("Couldn't fetch ratings", e.to_string()),
-                Ok(reviews) => {
+                Ok(Partial {
+                    items: reviews,
+                    error,
+                }) => {
                     let now = Timestamp::now();
                     let keys: Vec<GameKey> = s
                         .repo
@@ -379,10 +641,18 @@ impl AppState {
                     let n = keys.len();
                     s.repo
                         .apply_changes("Update Steam ratings", keys, Vec::new(), &[]);
-                    self.toast(format!(
+                    let msg = format!(
                         "Updated ratings for {n} key{}",
                         if n == 1 { "" } else { "s" }
-                    ));
+                    );
+                    match error {
+                        // Keys not reached stay stale, so the next refresh fetches them.
+                        Some(e) => self.toast_error(
+                            msg,
+                            format!("Stopped early: {e}. Refresh ratings later for the rest."),
+                        ),
+                        None => self.toast(msg),
+                    }
                 }
             },
             JobDone::Ownership {
@@ -456,7 +726,7 @@ impl AppState {
                 }
                 s.steam_ui.status = Some((true, msg));
             }
-            JobDone::Prices(_) => {}
+            JobDone::Prices(_) | JobDone::Many(_) => {}
         }
     }
 }

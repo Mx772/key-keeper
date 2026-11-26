@@ -750,6 +750,12 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
             .min(110.0)
             .sortable(),
     )
+    .column(
+        TableColumn::new("source", "Source")
+            .width(120.0)
+            .min(80.0)
+            .sortable(),
+    )
     .column(TableColumn::new("key", "Key").width(170.0).min(140.0))
     .column(TableColumn::new("status", "Status").width(120.0).sortable())
     .column(
@@ -812,6 +818,7 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
                 ),
                 b => Cell::text(b.unwrap_or("")).muted(),
             },
+            "source" => Cell::text(key.source.as_deref().unwrap_or("")).muted(),
             "key" => Cell::text(key.key.masked()).mono(),
             "platform" => Cell::text(key.platform.label()).muted(),
             "rating" => match key.steam.as_ref().and_then(|m| m.rating.as_ref()) {
@@ -1076,16 +1083,22 @@ fn view_menu(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
                 .key("group-by-bundle")
                 .checked(sess.group_by_bundle)
                 .on_select(|s: &mut AppState| s.toggle_group_by_bundle()),
+        )
+        .item(
+            MenuItem::new("Group by source")
+                .key("group-by-source")
+                .checked(sess.group_by_source)
+                .on_select(|s: &mut AppState| s.toggle_group_by_source()),
         );
-    if sess.group_by_bundle {
+    if sess.group_field().is_some() {
         m = m
             .item(
-                MenuItem::new("Collapse all bundles")
+                MenuItem::new("Collapse all groups")
                     .key("groups-collapse")
                     .on_select(|s: &mut AppState| s.collapse_all_groups(true)),
             )
             .item(
-                MenuItem::new("Expand all bundles")
+                MenuItem::new("Expand all groups")
                     .key("groups-expand")
                     .on_select(|s: &mut AppState| s.collapse_all_groups(false)),
             );

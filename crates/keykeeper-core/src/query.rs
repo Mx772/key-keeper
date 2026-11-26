@@ -70,6 +70,103 @@ pub struct Query {
     pub sort: Sort,
 }
 
+/// The grouping form of a free-text label (bundle, source): lowercase, spaces collapsed, so
+/// "Humble", "humble" and " Humble  " group together.
+pub fn label_key(s: &str) -> String {
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Which free-text label of a key: its bundle or its source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelField {
+    Bundle,
+    Source,
+}
+
+impl LabelField {
+    pub fn of(self, k: &GameKey) -> Option<&str> {
+        match self {
+            LabelField::Bundle => k.bundle.as_deref(),
+            LabelField::Source => k.source.as_deref(),
+        }
+        .filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// Every distinct value of `field` in `keys` (ignoring case and spacing), each spelled the way
+/// most keys spell it, with how many keys use it. Most used first.
+pub fn label_values(keys: &[GameKey], field: LabelField) -> Vec<(String, usize)> {
+    let mut by_key: std::collections::HashMap<String, std::collections::HashMap<&str, usize>> =
+        Default::default();
+    for k in keys {
+        if let Some(v) = field.of(k) {
+            *by_key
+                .entry(label_key(v))
+                .or_default()
+                .entry(v.trim())
+                .or_default() += 1;
+        }
+    }
+    let mut out: Vec<(String, usize)> = by_key
+        .into_values()
+        .map(|spellings| {
+            let total = spellings.values().sum();
+            let best = spellings
+                .into_iter()
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+                .map(|(s, _)| s.to_string())
+                .unwrap_or_default();
+            (best, total)
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| natural_cmp(&a.0, &b.0)));
+    out
+}
+
+/// Up to `limit` existing values of `field` for what's typed: values starting with it first,
+/// then ones containing it; nothing once it already names a value exactly.
+pub fn label_suggestions(
+    keys: &[GameKey],
+    field: LabelField,
+    typed: &str,
+    limit: usize,
+) -> Vec<String> {
+    let t = label_key(typed);
+    if t.is_empty() {
+        return Vec::new();
+    }
+    let values = label_values(keys, field);
+    if values.iter().any(|(v, _)| v.trim() == typed.trim()) {
+        return Vec::new();
+    }
+    let mut starts = Vec::new();
+    let mut contains = Vec::new();
+    for (v, _) in values {
+        let k = label_key(&v);
+        if k.starts_with(&t) {
+            starts.push(v);
+        } else if k.contains(&t) {
+            contains.push(v);
+        }
+    }
+    starts.extend(contains);
+    starts.truncate(limit);
+    starts
+}
+
+/// `value` spelled the way the library already spells it, when it differs only in case or
+/// spacing ("humble" becomes "Humble" when that's what the other keys say).
+pub fn canonical_label(keys: &[GameKey], field: LabelField, value: &str) -> String {
+    let k = label_key(value);
+    label_values(keys, field)
+        .into_iter()
+        .find(|(v, _)| label_key(v) == k)
+        .map_or_else(|| value.trim().to_string(), |(v, _)| v)
+}
+
 /// What makes two keys "the same game": the Steam app id, else the name in lowercase with only
 /// letters and digits ("Hollow Knight" and "hollow-knight" match).
 pub fn game_identity(k: &GameKey) -> String {
@@ -267,6 +364,41 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_group_ignoring_case_and_spacing() {
+        let mk = |src: &str| {
+            let mut k = GameKey::new("G", "K");
+            k.source = Some(src.into());
+            k
+        };
+        let keys = vec![
+            mk("Humble"),
+            mk("humble"),
+            mk(" Humble "),
+            mk("Fanatical"),
+            mk("  "),
+        ];
+        assert_eq!(
+            label_values(&keys, LabelField::Source),
+            vec![("Humble".to_string(), 3), ("Fanatical".to_string(), 1)]
+        );
+        assert_eq!(
+            canonical_label(&keys, LabelField::Source, "HUMBLE "),
+            "Humble"
+        );
+        assert_eq!(canonical_label(&keys, LabelField::Source, "GOG"), "GOG");
+        assert_eq!(
+            label_suggestions(&keys, LabelField::Source, "hum", 5),
+            vec!["Humble"]
+        );
+        assert_eq!(
+            label_suggestions(&keys, LabelField::Source, "a", 5),
+            vec!["Fanatical"]
+        );
+        assert!(label_suggestions(&keys, LabelField::Source, "Humble", 5).is_empty());
+        assert!(label_suggestions(&keys, LabelField::Bundle, "x", 5).is_empty());
+    }
     use crate::data::VaultData;
     use crate::model::{SteamMeta, SteamRating};
     use jiff::civil::date;

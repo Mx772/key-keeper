@@ -160,6 +160,19 @@ pub fn wrap(sess: &Session, area: El, k: &Kit, overlays: &mut Vec<El>) -> El {
                 );
             }
         }
+        if let Some(t) = k0.trade_id.and_then(|t| sess.repo.trade(t)) {
+            let tid = t.id;
+            any = true;
+            m = m.item(item("Show trade", move |s, _| s.select_trade(tid)).key("menu-show-trade"));
+            if let Some(url) = t.trade_url.clone() {
+                m = m.item(
+                    item("Open trade link", move |_, tx| {
+                        let _ = tx.open_url(&url);
+                    })
+                    .key("menu-link-trade"),
+                );
+            }
+        }
         if k0.steam_app_id.is_none() {
             let id = k0.id;
             any = true;
@@ -172,6 +185,17 @@ pub fn wrap(sess: &Session, area: El, k: &Kit, overlays: &mut Vec<El>) -> El {
         let ids = ids.clone();
         m = m
             .item(item("Match on Steam", move |s, _| s.match_missing(&ids)).key("menu-match"))
+            .separator();
+    }
+    if keys.iter().any(|k| k.steam_app_id.is_some()) {
+        let ids = ids.clone();
+        m = m
+            .item(
+                item("Refresh prices & ratings", move |s, _| {
+                    s.refresh_selected(&ids)
+                })
+                .key("menu-refresh"),
+            )
             .separator();
     }
 

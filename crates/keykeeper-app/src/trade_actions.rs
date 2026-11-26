@@ -3,9 +3,10 @@
 
 use std::time::Duration;
 
+use keykeeper_core::import::values::parse_date;
 use keykeeper_core::template::{self, KEY_VARS, TRADE_VARS, TemplateError};
-use keykeeper_core::trade::{parse_received, received_text};
-use keykeeper_core::{Templates, Trade, TradeSite, TradeStatus};
+use keykeeper_core::trade::{parse_received, received_text, trade_day};
+use keykeeper_core::{DateFormat, Templates, Trade, TradeSite, TradeStatus};
 use rune::{TextEdit, Tx};
 use uuid::Uuid;
 
@@ -24,6 +25,9 @@ pub struct TradeForm {
     pub add_received: bool,
     pub site_open: bool,
     pub show_keys: bool,
+    /// The day it happened (completed, else sent), as typed or picked.
+    pub date: TextEdit,
+    pub date_pick: Option<crate::ui::DatePick>,
 }
 
 fn opt(e: &TextEdit) -> Option<String> {
@@ -33,7 +37,7 @@ fn opt(e: &TextEdit) -> Option<String> {
 }
 
 impl TradeForm {
-    pub fn from_trade(t: &Trade, add_received_default: bool) -> TradeForm {
+    pub fn from_trade(t: &Trade, add_received_default: bool, fmt: DateFormat) -> TradeForm {
         TradeForm {
             trade_id: t.id,
             site: t.site.clone(),
@@ -49,7 +53,15 @@ impl TradeForm {
             },
             site_open: false,
             show_keys: false,
+            date: TextEdit::new(fmt.format(trade_day(t, &jiff::tz::TimeZone::system()))),
+            date_pick: None,
         }
+    }
+
+    /// The typed date, when it's a valid one different from the trade's.
+    pub fn new_date(&self, t: &Trade, fmt: DateFormat) -> Option<jiff::civil::Date> {
+        let d = parse_date(&self.date.text, fmt).ok().flatten()?;
+        (d != trade_day(t, &jiff::tz::TimeZone::system())).then_some(d)
     }
 
     /// `t` with this form's details written in. A recognised trade link sets the site.
@@ -159,8 +171,15 @@ impl Session {
             return;
         };
         let updated = form.apply(t);
+        let date = (t.status != TradeStatus::Draft)
+            .then(|| form.new_date(t, self.date_format()))
+            .flatten();
+        let id = t.id;
         if updated != *t {
             let _ = self.repo.update_trade_details(updated);
+        }
+        if let Some(d) = date {
+            let _ = self.repo.set_trade_date(id, d);
         }
     }
 
@@ -172,9 +191,10 @@ impl Session {
         }
         self.sync_trade_form();
         let default = self.settings().add_received_to_library;
+        let fmt = self.date_format();
         self.trade_form = target
             .and_then(|id| self.repo.trade(id))
-            .map(|t| TradeForm::from_trade(t, default));
+            .map(|t| TradeForm::from_trade(t, default, fmt));
         true
     }
 }
@@ -464,7 +484,7 @@ mod tests {
     #[test]
     fn form_apply_detects_site_from_link() {
         let t = Trade::new();
-        let mut f = TradeForm::from_trade(&t, true);
+        let mut f = TradeForm::from_trade(&t, true, DateFormat::MonthDayYear);
         assert!(f.add_received, "drafts take the settings default");
         f.trade_url = TextEdit::new("https://www.steamtrades.com/trade/abc/");
         f.partner = TextEdit::new("  lumen ");
