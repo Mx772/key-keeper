@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- KeyKeeper app icon. Source of truth: run make-icons.py after editing. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2540"/>
+      <stop offset="1" stop-color="#121829"/>
+    </linearGradient>
+    <linearGradient id="key" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8cc2f5"/>
+      <stop offset="1" stop-color="#5b9fe3"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect x="6" y="6" width="1012" height="1012" rx="222" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="12"/>
+  <g transform="rotate(45 512 512) translate(34 0)" fill="url(#key)">
+    <!-- bow: a ring (even-odd leaves the hole see-through) -->
+    <path fill-rule="evenodd" d="M150 512a170 170 0 1 0 340 0a170 170 0 1 0 -340 0Z M262 512a58 58 0 1 0 116 0a58 58 0 1 0 -116 0Z"/>
+    <!-- blade -->
+    <rect x="470" y="474" width="350" height="76" rx="20"/>
+    <!-- teeth -->
+    <rect x="652" y="530" width="58" height="104" rx="14"/>
+    <rect x="742" y="530" width="58" height="148" rx="14"/>
+  </g>
+</svg>

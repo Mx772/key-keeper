@@ -94,6 +94,12 @@ fn shown(rt: &Runtime<AppState>) -> Vec<String> {
         .collect()
 }
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn window_icon_is_a_valid_image() {
+    rune::set_app_icon(crate::ICON_PNG).expect("icon-256.png decodes");
+}
+
 // ── lock screen ──────────────────────────────────────────────────────────────────────────────
 
 #[test]

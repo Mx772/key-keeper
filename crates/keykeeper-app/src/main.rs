@@ -108,7 +108,23 @@ const SCENES: &[Scene] = &[
     }),
 ];
 
+/// The window and taskbar icon (Windows, Linux). On macOS the bundle's `.icns` is used instead,
+/// drawn on Apple's icon grid.
+#[cfg(not(target_os = "macos"))]
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
+
+#[cfg(not(target_os = "macos"))]
+fn set_icon() {
+    if let Err(e) = rune::set_app_icon(ICON_PNG) {
+        eprintln!("keykeeper: app icon: {e}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_icon() {}
+
 fn main() {
+    set_icon();
     let theme = config::Config::default_path()
         .map(|p| config::Config::load(&p))
         .unwrap_or_default()
