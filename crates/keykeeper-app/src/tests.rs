@@ -957,6 +957,10 @@ fn ambiguous_search_offers_candidates() {
 #[test]
 fn bulk_match_then_filter_unmatched() {
     let mut rt = steam_rt(&["Animal Well", "Doom", "Unknown Indie"]);
+    click(&mut rt, "steam-menu-button");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "steam-match-all");
     wait_for_steam(&mut rt);
     assert_eq!(key_named(&rt, "Animal Well").steam_app_id, Some(813230));
@@ -1768,6 +1772,10 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
         ui.itad_key = TextEdit::new("itad-key");
         ui.gg_key = TextEdit::new("bad-gg");
     });
+    click(&mut rt, "steam-menu-button");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "prices-refresh");
     wait_for_steam(&mut rt);
     let s = rt.state.session().unwrap();
@@ -2559,4 +2567,84 @@ fn grid_view_shows_cards_that_open_and_fetches_their_art() {
 
     right_click(&mut rt, &format!("name-{id}"));
     assert!(rt.find("menu-edit").is_some(), "cards have the row menu");
+}
+
+// ── polish ────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn date_picker_fills_the_field_in_the_date_format() {
+    let mut rt = demo_rt();
+    let id = rt.state.session().unwrap().rows[0];
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "pick-deadline");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    let month = rt
+        .state
+        .session()
+        .unwrap()
+        .form
+        .as_ref()
+        .unwrap()
+        .date_pick
+        .unwrap()
+        .month;
+    rt.update(|s, _| s.date_pick_month(1));
+    rt.frame(1.0 / 60.0);
+    let next = month.checked_add(jiff::Span::new().months(1)).unwrap();
+    let day = next.with().day(15).build().unwrap();
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, &format!("pick-day-{day}"));
+    let f = rt.state.session().unwrap().form.as_ref().unwrap();
+    assert!(f.date_pick.is_none(), "choosing closes it");
+    assert_eq!(
+        f.deadline.text,
+        crate::form::format_date(Some(day), keykeeper_core::DateFormat::MonthDayYear)
+    );
+    rt.update(|s, _| s.toggle_date_pick("deadline"));
+    rt.update(|s, _| s.pick_date(None));
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .form
+            .as_ref()
+            .unwrap()
+            .deadline
+            .text,
+        ""
+    );
+}
+
+#[test]
+fn no_matches_offers_to_clear_filters_and_delete_offers_undo() {
+    let mut rt = demo_rt();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.search.replace_text("zzz no such game");
+        x.duplicates = true;
+        x.filters_changed();
+    });
+    poll(&mut rt, 0.0);
+    assert!(rt.find("library-no-matches").is_some());
+    click(&mut rt, "clear-filters");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.rows.len(), 18);
+    assert!(s.search.text.is_empty() && !s.duplicates);
+
+    let id = s.rows[0];
+    rt.update(|s, _| s.ask_delete(vec![id]));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "confirm-ok");
+    let t = rt.state.toasts.last().unwrap();
+    assert!(t.undo && t.title == "Deleted 1 key");
+    let tid = t.id;
+    rt.update(|s, _| s.undo_from_toast(tid));
+    assert!(rt.state.session().unwrap().repo.key(id).is_some(), "undone");
+    assert!(rt.state.toasts.iter().all(|t| t.id != tid));
 }

@@ -185,6 +185,8 @@ pub struct Session {
     pub collapsed: std::collections::HashSet<String>,
     /// The library's View menu, its Columns submenu, and the column menu on a header.
     pub view_menu: bool,
+    /// The library header's Steam actions menu.
+    pub steam_menu: bool,
     pub view_columns_open: bool,
     pub header_menu: Option<rune::PointerPress>,
     rows_stamp: Option<(u64, u64)>,
@@ -253,6 +255,7 @@ impl Session {
             group_by_bundle: false,
             collapsed: std::collections::HashSet::new(),
             view_menu: false,
+            steam_menu: false,
             view_columns_open: false,
             header_menu: None,
             rows_stamp: None,
@@ -400,6 +403,8 @@ pub struct AppState {
     pub hover: Option<Hover>,
     /// Screenshot / test sessions never fetch from Steam.
     pub offline: bool,
+    /// The window's last laid-out size and maximized state, saved on close.
+    pub window_seen: std::cell::Cell<Option<crate::config::WindowSize>>,
 }
 
 /// The pointer is resting on a game's name (or grid card).
@@ -443,6 +448,7 @@ impl AppState {
             info: crate::info::GameInfo::default(),
             hover: None,
             offline: false,
+            window_seen: std::cell::Cell::new(None),
         }
     }
 
@@ -813,7 +819,13 @@ impl AppState {
 
     /// Window closing: flush unsaved changes and clear a copied key.
     pub fn on_close(&mut self, tx: &mut Tx) {
-        if self.layout_save_at.take().is_some() {
+        let window = self.window_seen.get().filter(|_| !self.offline);
+        if self.layout_save_at.take().is_some()
+            || (window.is_some() && window != self.config.window)
+        {
+            if window.is_some() {
+                self.config.window = window;
+            }
             self.save_config();
         }
         if let Screen::Unlocked(s) = &mut self.screen {
@@ -998,11 +1010,10 @@ impl AppState {
                 {
                     s.form = None;
                 }
-                self.toast(format!(
-                    "Deleted {n} key{} — {} to undo",
-                    if n == 1 { "" } else { "s" },
-                    crate::ui::shortcut("Ctrl+Z"),
-                ));
+                self.toast_undo(
+                    format!("Deleted {n} key{}", if n == 1 { "" } else { "s" }),
+                    n > 0,
+                );
             }
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
             Confirm::CancelTrade(id) => self.cancel_trade_now(id),
@@ -1036,7 +1047,7 @@ impl AppState {
         if let Ok(n) = res
             && n > 0
         {
-            self.toast(format!("Marked {n} as {}", status.label()));
+            self.toast_undo(format!("Marked {n} as {}", status.label()), true);
         }
     }
 
@@ -1067,6 +1078,20 @@ impl AppState {
             } else {
                 s.statuses.push(status);
             }
+            s.filters_changed();
+        }
+    }
+
+    /// Back to every key: no search, no status or other filters.
+    pub fn clear_all_filters(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.search.replace_text("");
+            s.statuses.clear();
+            s.hide_gone = false;
+            s.deadline_soon = false;
+            s.missing_app_id = false;
+            s.trade_fodder = false;
+            s.duplicates = false;
             s.filters_changed();
         }
     }
@@ -1433,8 +1458,12 @@ impl AppState {
                 let Some(s) = self.session_mut() else {
                     return false;
                 };
+                if s.form.as_mut().and_then(|f| f.date_pick.take()).is_some() {
+                    return true;
+                }
                 if std::mem::take(&mut s.shortcuts_open)
                     || std::mem::take(&mut s.view_menu)
+                    || std::mem::take(&mut s.steam_menu)
                     || s.header_menu.take().is_some()
                     || s.row_menu.take().is_some()
                     || s.bulk.take().is_some()

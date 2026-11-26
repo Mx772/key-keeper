@@ -27,6 +27,31 @@ pub struct Config {
     pub fetch_store_info: Option<bool>,
     /// Library layout.
     pub library: LibraryLayout,
+    /// The window's size when it was last closed.
+    pub window: Option<WindowSize>,
+}
+
+/// The window's size (in points) and whether it was maximized.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowSize {
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowSize {
+    /// A sane size to open at: at least the minimum, at most a very large screen.
+    pub fn clamped(self, min: (f32, f32)) -> (f32, f32) {
+        let ok = |v: f32, lo: f32| {
+            if v.is_finite() {
+                v.clamp(lo, 8000.0)
+            } else {
+                lo
+            }
+        };
+        (ok(self.width, min.0), ok(self.height, min.1))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +188,11 @@ mod tests {
             theme: Some("forest".into()),
             check_updates: Some(false),
             skipped_version: Some("0.2.0".into()),
+            window: Some(WindowSize {
+                width: 1400.0,
+                height: 900.0,
+                maximized: true,
+            }),
             hover_cards: Some(false),
             hover_delay_ms: Some(100),
             fetch_store_info: Some(false),
@@ -186,6 +216,12 @@ mod tests {
         let d = Config::default();
         assert!(d.hover_cards() && d.fetch_store_info());
         assert_eq!(d.library.view, LibraryView::Table);
+        let w = WindowSize {
+            width: 10.0,
+            height: f32::NAN,
+            maximized: false,
+        };
+        assert_eq!(w.clamped((960.0, 620.0)), (960.0, 620.0));
     }
 
     #[test]

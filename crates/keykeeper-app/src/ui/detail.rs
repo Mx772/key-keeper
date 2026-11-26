@@ -227,9 +227,23 @@ pub fn view(
                     field(
                         k,
                         "Redeem / trade date",
-                        input(k, "form-status-date", &form.status_date, date_ph, |f| {
-                            &mut f.status_date
-                        }),
+                        row()
+                            .w_full()
+                            .gap(2.0)
+                            .center_y()
+                            .child(
+                                input(k, "form-status-date", &form.status_date, date_ph, |f| {
+                                    &mut f.status_date
+                                })
+                                .grow(1.0),
+                            )
+                            .child(super::datepick::button(
+                                k,
+                                form,
+                                "status_date",
+                                fmt,
+                                overlays,
+                            )),
                         err("status_date"),
                     )
                     .grow(1.0),
@@ -238,9 +252,17 @@ pub fn view(
                     field(
                         k,
                         "Redemption deadline",
-                        input(k, "form-deadline", &form.deadline, date_ph, |f| {
-                            &mut f.deadline
-                        }),
+                        row()
+                            .w_full()
+                            .gap(2.0)
+                            .center_y()
+                            .child(
+                                input(k, "form-deadline", &form.deadline, date_ph, |f| {
+                                    &mut f.deadline
+                                })
+                                .grow(1.0),
+                            )
+                            .child(super::datepick::button(k, form, "deadline", fmt, overlays)),
                         err("deadline"),
                     )
                     .grow(1.0),

@@ -221,7 +221,8 @@ impl AppState {
         {
             s.form = Some(crate::form::KeyForm::from_key(k, fmt));
         }
-        if res.added > 0 {
+        let undoable = res.added > 0;
+        if undoable {
             self.cart_bump_pending = true;
         }
         let msg = match (res.added, res.skipped) {
@@ -231,7 +232,7 @@ impl AppState {
             (n, 0) => format!("Added {n} to cart"),
             (n, k) => format!("Added {n} to cart, skipped {k} unavailable"),
         };
-        self.toast(msg);
+        self.toast_undo(msg, undoable);
     }
 
     /// Mark keys as redeemed on my own account today (they leave the cart if they were in it).
@@ -265,14 +266,13 @@ impl AppState {
         if let Some(url) = url {
             let _ = tx.open_url(&url);
         }
-        let undo = crate::ui::shortcut("Ctrl+Z");
-        self.toast(match name {
-            Some(n) => format!("Marked {n} as redeemed today — {undo} to undo"),
-            None => format!(
-                "Marked {} keys as redeemed today — {undo} to undo",
-                done.len()
-            ),
-        });
+        self.toast_undo(
+            match name {
+                Some(n) => format!("Marked {n} as redeemed today"),
+                None => format!("Marked {} keys as redeemed today", done.len()),
+            },
+            true,
+        );
     }
 
     pub fn ask_redeem_cart(&mut self) {
@@ -291,11 +291,13 @@ impl AppState {
         s.trade_form = None;
         s.refresh_trade_form();
         let n = done.len();
-        self.toast(format!(
-            "Self-checkout: {n} key{} marked redeemed today — {} to undo",
-            if n == 1 { "" } else { "s" },
-            crate::ui::shortcut("Ctrl+Z")
-        ));
+        self.toast_undo(
+            format!(
+                "Self-checkout: {n} key{} marked redeemed today",
+                if n == 1 { "" } else { "s" }
+            ),
+            n > 0,
+        );
     }
 
     pub fn remove_from_cart(&mut self, id: Uuid) {

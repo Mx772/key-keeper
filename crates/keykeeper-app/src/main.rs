@@ -124,6 +124,20 @@ const SCENES: &[Scene] = &[
             s.select_card(id);
         }
     }),
+    ("datepick", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| {
+            x.rows.iter().copied().find(|id| {
+                x.repo
+                    .key(*id)
+                    .is_some_and(|k| k.redemption_deadline.is_some() && k.steam_app_id.is_some())
+            })
+        });
+        if let Some(id) = id {
+            s.open_key(id);
+            s.toggle_date_pick("deadline");
+        }
+    }),
     ("cart-button", |s| {
         demo::unlock(s, demo::sample_data());
         let ids: Vec<_> = s
@@ -241,19 +255,23 @@ fn main() {
         std::process::exit(selftest::run());
     }
     set_icon();
-    let theme = config::Config::default_path()
+    let cfg = config::Config::default_path()
         .map(|p| config::Config::load(&p))
-        .unwrap_or_default()
-        .theme();
+        .unwrap_or_default();
+    let theme = cfg.theme();
+    const MIN: (f32, f32) = (960.0, 620.0);
+    let size = cfg.window.map_or((1280.0, 800.0), |w| w.clamped(MIN));
+    let maximized = cfg.window.is_some_and(|w| w.maximized);
     let spec = AppSpec::<AppState> {
-        min_size: Some((960.0, 620.0)),
+        min_size: Some(MIN),
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
         scenes: SCENES,
-        ..AppSpec::new("KeyKeeper", (1280.0, 800.0), AppState::load, ui::view)
+        ..AppSpec::new("KeyKeeper", size, AppState::load, ui::view)
     };
     App::new(spec)
+        .maximized(maximized)
         .color_scheme(theme.color_scheme())
         .on_close(on_close)
         .run();

@@ -38,6 +38,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .key("library-header")
         .w_full()
         .center_y()
+        .flex_wrap()
         .gap(10.0)
         .child(
             col()
@@ -58,41 +59,17 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         )
         .child(spacer())
         .child(
-            el().key("steam-match-all").child(
-                Button::new("Match on Steam")
-                    .variant(ButtonVariant::Outline)
-                    .disabled(s.steam_busy())
-                    .help("Find Steam app ids for keys that don't have one")
-                    .on_press(|s: &mut AppState| s.match_missing(&[]))
-                    .build(k),
-            ),
-        )
-        .child(
-            el().key("steam-ratings").child(
-                Button::new("Refresh ratings")
-                    .variant(ButtonVariant::Outline)
-                    .disabled(s.steam_busy())
-                    .on_press(|s: &mut AppState| s.refresh_ratings(true))
-                    .build(k),
-            ),
-        )
-        .child(
-            el().key("prices-refresh").child(
-                Button::new("Refresh prices")
-                    .variant(ButtonVariant::Outline)
-                    .disabled(s.steam_busy())
-                    .help("Current store prices from IsThereAnyDeal / gg.deals (keys in Settings → Prices)")
-                    .on_press(|s: &mut AppState| s.refresh_prices(true))
-                    .build(k),
-            ),
-        )
-        .child(
-            Button::new("Import")
-                .variant(ButtonVariant::Outline)
-                .on_press(|s: &mut AppState| s.go(Page::Import))
-                .build(k),
-        )
-        .child(primary(k, "add-key", "+ Add key", true, |s, _| s.new_key()));
+            hstack()
+                .key("library-actions")
+                .child(steam_menu(s, sess, k, overlays))
+                .child(
+                    Button::new("Import")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(|s: &mut AppState| s.go(Page::Import))
+                        .build(k),
+                )
+                .child(primary(k, "add-key", "+ Add key", true, |s, _| s.new_key())),
+        );
 
     let search = TextInput::new(&sess.search)
         .placeholder("Search games, bundles, notes, keys…")
@@ -114,15 +91,15 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .build(k)
         .key("search");
 
-    let mut chips = hstack().key("status-filters").gap(6.0).child(chip(
+    let mut chips: Vec<El> = vec![chip(
         k,
         "filter-all",
         "All",
         sess.statuses.is_empty(),
         |s| s.clear_status_filter(),
-    ));
+    )];
     for st in KeyStatus::ALL {
-        chips = chips.child(chip(
+        chips.push(chip(
             k,
             format!("filter-{}", st.label().to_lowercase()),
             st.label(),
@@ -130,30 +107,28 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
             move |s| s.toggle_status_filter(st),
         ));
     }
-    let toggles = hstack()
-        .gap(6.0)
-        .child(chip(
+    let toggles: Vec<El> = vec![
+        chip(
             k,
             "filter-hide-gone",
             "Hide traded & redeemed",
             sess.hide_gone,
             |s| s.toggle_hide_gone(),
-        ))
-        .child(chip(
+        ),
+        chip(
             k,
             "filter-deadline",
             "Deadline ≤ 30 days",
             sess.deadline_soon,
             |s| s.toggle_deadline_soon(),
-        ))
-        .child(chip(
+        ),
+        chip(
             k,
             "filter-no-steam",
             "No Steam id",
             sess.missing_app_id,
             |s| s.toggle_missing_app_id(),
-        ))
-        .child(
+        ),
             chip(
                 k,
                 "filter-fodder",
@@ -162,8 +137,6 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
                 |s| s.toggle_trade_fodder(),
             )
             .help("Keys still in hand for games you already own on Steam (Settings › Steam › Check library)"),
-        )
-        .child(
             chip(
                 k,
                 "filter-dupes",
@@ -172,15 +145,17 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
                 |s| s.toggle_duplicates(),
             )
             .help("Games you have more than one key for"),
-        );
+    ];
+    // One wrapping row of chips, so narrow windows (or an open editor) never cut one off.
     let filters = row()
+        .key("status-filters")
         .w_full()
         .gap(6.0)
         .center_y()
         .flex_wrap()
-        .child(chips)
-        .child(el().w(12.0))
-        .child(toggles);
+        .children(chips)
+        .child(el().w(10.0))
+        .children(toggles);
     let search_row = row()
         .w_full()
         .gap(10.0)
@@ -214,6 +189,8 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     }
     if total == 0 {
         page = page.child(empty_state(k));
+    } else if shown == 0 {
+        page = page.child(no_matches(k));
     } else {
         let area = if s.config.library.view == LibraryView::Grid {
             super::row_menu::wrap(sess, super::grid::view(s, sess, k), k, overlays)
@@ -441,6 +418,102 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
                 })
                 .build(k),
         )
+}
+
+/// The Steam actions, folded into one menu so the header fits beside the editor.
+fn steam_menu(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let busy = s.steam_busy();
+    let trigger = el().key("steam-menu-button").child(
+        Button::new("Steam")
+            .variant(ButtonVariant::Outline)
+            .icon(k.glyph.chevron_down)
+            .help("Match games, refresh ratings and prices")
+            .on_press(|s: &mut AppState| {
+                s.hover = None;
+                if let Some(x) = s.session_mut() {
+                    x.steam_menu = !x.steam_menu;
+                }
+            })
+            .build(k),
+    );
+    let close = |s: &mut AppState| {
+        if let Some(x) = s.session_mut() {
+            x.steam_menu = false;
+        }
+    };
+    Menu::new("steam-menu")
+        .trigger(trigger)
+        .open(sess.steam_menu)
+        .label("Steam actions")
+        .min_width(250.0)
+        .on_close(close)
+        .item(
+            MenuItem::new("Match on Steam")
+                .key("steam-match-all")
+                .description("Find app ids for keys without one")
+                .disabled(busy)
+                .on_select(move |s: &mut AppState| {
+                    close(s);
+                    s.match_missing(&[]);
+                }),
+        )
+        .item(
+            MenuItem::new("Refresh ratings")
+                .key("steam-ratings")
+                .disabled(busy)
+                .on_select(move |s: &mut AppState| {
+                    close(s);
+                    s.refresh_ratings(true);
+                }),
+        )
+        .item(
+            MenuItem::new("Refresh prices")
+                .key("prices-refresh")
+                .description("IsThereAnyDeal / gg.deals (keys in Settings › Prices)")
+                .disabled(busy)
+                .on_select(move |s: &mut AppState| {
+                    close(s);
+                    s.refresh_prices(true);
+                }),
+        )
+        .separator()
+        .item(
+            MenuItem::new("Wishlist & library check…")
+                .key("steam-settings")
+                .on_select(move |s: &mut AppState| {
+                    close(s);
+                    s.go(Page::Settings);
+                }),
+        )
+        .build(k, overlays)
+}
+
+/// Keys exist, but none match the search and filters.
+fn no_matches(k: &Kit) -> El {
+    col()
+        .key("library-no-matches")
+        .w_full()
+        .grow(1.0)
+        .center()
+        .gap(12.0)
+        .child(
+            rune::icon(k.glyph.search, 34.0)
+                .color(k.c.text_faint)
+                .a11y_hidden(),
+        )
+        .child(
+            text("No keys match")
+                .font(rune::TextStyle::new(20.0, 650.0))
+                .color(k.c.text_strong),
+        )
+        .child(muted(k, "Try another search, or clear the filters."))
+        .child(primary(
+            k,
+            "clear-filters",
+            "Clear search and filters",
+            true,
+            |s, _| s.clear_all_filters(),
+        ))
 }
 
 fn empty_state(k: &Kit) -> El {

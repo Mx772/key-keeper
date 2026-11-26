@@ -78,6 +78,24 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
             })
             .on_press(move |s: &mut AppState| s.go(page))
             .child(
+                rune::icon(
+                    match page {
+                        Page::Library => &super::NAV_LIBRARY,
+                        Page::Cart => &super::CART,
+                        Page::Trades => &super::NAV_TRADES,
+                        Page::Import => &super::NAV_IMPORT,
+                        Page::Settings => &super::NAV_SETTINGS,
+                    },
+                    17.0,
+                )
+                .color(if active {
+                    k.c.text_contrast
+                } else {
+                    k.c.text_muted
+                })
+                .a11y_hidden(),
+            )
+            .child(
                 text(page.label())
                     .font(k.ty.ui_medium)
                     .color(if active {
@@ -181,10 +199,27 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .border(1.0, k.c.border_weak)
         .child(
-            text("KeyKeeper")
-                .font(rune::TextStyle::new(22.0, 700.0).lh(28.0))
-                .color(k.c.text_accent)
-                .pl(6.0),
+            row()
+                .gap(9.0)
+                .center_y()
+                .pl(6.0)
+                .child(
+                    el().size(30.0, 30.0)
+                        .radius(9.0)
+                        .center()
+                        .fill(k.c.bg_accent)
+                        .shadow(2.0, 10.0, k.c.bg_accent.alpha(0.35))
+                        .child(
+                            rune::icon(&super::KEY, 18.0)
+                                .color(k.c.text_contrast)
+                                .a11y_hidden(),
+                        ),
+                )
+                .child(
+                    text("KeyKeeper")
+                        .font(rune::TextStyle::new(21.0, 750.0).lh(28.0).tracking(-0.3))
+                        .color(k.c.text_strong),
+                ),
         )
         .child(rows.grow(1.0))
         .child(footer)
