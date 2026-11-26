@@ -1,0 +1,241 @@
+//! The unlocked window: sidebar, page, detail pane, dialogs and toasts.
+
+use rune::{El, Tx, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, Dialog, Kit, Toast};
+
+use super::{detail, import, library, settings, trades};
+use crate::app::{AppState, Confirm, ExportKind, Page, Session};
+
+pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let page = match sess.page {
+        Page::Library => library::view(s, sess, k, overlays),
+        Page::Trades => trades::view(sess, k),
+        Page::Import => import::view(s, sess, k, overlays),
+        Page::Settings => settings::view(s, sess, k, overlays),
+    };
+    let mut body = row()
+        .key("body")
+        .w_full()
+        .h_full()
+        .child(sidebar(sess, k))
+        .child(col().key("page").grow(1.0).min_w(0.0).h_full().child(page));
+    if sess.page == Page::Library
+        && let Some(form) = &sess.form
+    {
+        body = body.child(detail::view(sess, form, k, overlays));
+    }
+    confirm_dialog(sess, k, overlays);
+    body
+}
+
+fn sidebar(sess: &Session, k: &Kit) -> El {
+    let count = sess.repo.keys().len();
+    let nav = |page: Page| {
+        let active = sess.page == page;
+        let badge = match page {
+            Page::Library => Some(count.to_string()),
+            Page::Trades => Some(sess.repo.trades().len().to_string()).filter(|n| n != "0"),
+            _ => None,
+        };
+        let mut r = row()
+            .key(format!("nav-{}", page.slug()))
+            .role("tab")
+            .label(page.label())
+            .checked(active)
+            .focusable(true)
+            .w_full()
+            .h(40.0)
+            .px(14.0)
+            .gap(10.0)
+            .center_y()
+            .radius(10.0)
+            .fill(if active {
+                k.c.bg_accent
+            } else {
+                k.c.bg_base.alpha(0.0)
+            })
+            .hover(if active {
+                k.c.bg_accent
+            } else {
+                k.c.surface_hover
+            })
+            .on_press(move |s: &mut AppState| s.go(page))
+            .child(
+                text(page.label())
+                    .font(k.ty.ui_medium)
+                    .color(if active {
+                        k.c.text_contrast
+                    } else {
+                        k.c.text_base
+                    })
+                    .grow(1.0)
+                    .a11y_hidden(),
+            );
+        if let Some(b) = badge {
+            r = r.child(
+                text(b)
+                    .font(k.ty.text_xsmall_medium)
+                    .color(if active {
+                        k.c.text_contrast
+                    } else {
+                        k.c.text_faint
+                    })
+                    .a11y_hidden(),
+            );
+        }
+        r
+    };
+    let mut rows = col().key("nav").w_full().gap(6.0);
+    for p in Page::ALL {
+        rows = rows.child(nav(p));
+    }
+    let footer = col()
+        .w_full()
+        .gap(10.0)
+        .child(el().h(1.0).w_full().fill(k.c.border_weak))
+        .child(
+            row()
+                .key("nav-lock")
+                .role("button")
+                .label("Lock (Ctrl+L)")
+                .focusable(true)
+                .w_full()
+                .h(36.0)
+                .px(14.0)
+                .center_y()
+                .radius(10.0)
+                .hover(k.c.surface_hover)
+                .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.lock(tx))
+                .child(
+                    text("Lock")
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_muted)
+                        .grow(1.0)
+                        .a11y_hidden(),
+                )
+                .child(
+                    text("Ctrl+L")
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint)
+                        .a11y_hidden(),
+                ),
+        )
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(
+                    text(save_status(sess))
+                        .key("save-status")
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint)
+                        .grow(1.0),
+                )
+                .child(
+                    text(concat!("v", env!("CARGO_PKG_VERSION")))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint),
+                ),
+        );
+    col()
+        .key("sidebar")
+        .w(232.0)
+        .h_full()
+        .padding(18.0)
+        .gap(26.0)
+        .fill(k.c.bg_base)
+        .border(1.0, k.c.border_weak)
+        .child(
+            text("KeyKeeper")
+                .font(rune::TextStyle::new(22.0, 700.0).lh(28.0))
+                .color(k.c.text_accent)
+                .pl(6.0),
+        )
+        .child(rows.grow(1.0))
+        .child(footer)
+}
+
+fn save_status(s: &Session) -> String {
+    match (&s.save_error, s.is_dirty()) {
+        (Some(_), _) => "Save failed".into(),
+        (None, true) => "Saving…".into(),
+        (None, false) => "All changes saved".into(),
+    }
+}
+
+fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
+    let Some(c) = &sess.confirm else { return };
+    let (title, desc, action, danger) = match c {
+        Confirm::DeleteKeys(ids) => (
+            if ids.len() == 1 { "Delete this key?".to_string() } else { format!("Delete {} keys?", ids.len()) },
+            "They're removed from the vault. You can undo with Ctrl+Z until you lock.".to_string(),
+            "Delete",
+            true,
+        ),
+        Confirm::ExportPlain(kind) => (
+            format!("Export {} without encryption?", if *kind == ExportKind::Csv { "CSV" } else { "JSON" }),
+            "The file will contain every key in the current view in plain text. Anyone who can read the file can redeem them.".to_string(),
+            "Export",
+            false,
+        ),
+    };
+    let buttons = row()
+        .key("confirm-actions")
+        .w_full()
+        .gap(8.0)
+        .justify_end()
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Neutral)
+                .on_press(|s: &mut AppState| s.cancel_confirm())
+                .build(k),
+        )
+        .child(
+            el().key("confirm-ok").child(
+                Button::new(action)
+                    .variant(if danger {
+                        ButtonVariant::Danger
+                    } else {
+                        ButtonVariant::Submit
+                    })
+                    .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.confirm(tx))
+                    .build(k),
+            ),
+        );
+    Dialog::new("confirm", title)
+        .open(true) // rune-kit dialogs render nothing unless opened
+        .description(desc)
+        .width(420.0)
+        .child(buttons)
+        .on_close(|s: &mut AppState| s.cancel_confirm())
+        .build(k, overlays);
+}
+
+pub fn toasts(s: &AppState, k: &Kit) -> Option<El> {
+    if s.toasts.is_empty() {
+        return None;
+    }
+    // Bottom-left of the page area, so toasts never cover the editor's Save / Delete footer
+    // (rune-kit's ToastRegion pins bottom-right).
+    let mut region = col()
+        .key("toast-region")
+        .role("region")
+        .label("Notifications")
+        .pin(Some(256.0), None, None, Some(24.0))
+        .w(380.0)
+        .gap(10.0);
+    for t in &s.toasts {
+        let id = t.id;
+        let mut toast = Toast::new(format!("toast-{id}"), t.title.clone())
+            .closable()
+            .on_close(move |s: &mut AppState| s.dismiss_toast(id));
+        if let Some(d) = &t.detail {
+            toast = toast.description(d.clone());
+        }
+        if t.error {
+            toast = toast.icon(k, k.glyph.circle_x);
+        }
+        region = region.child(toast.build(k));
+    }
+    Some(region)
+}

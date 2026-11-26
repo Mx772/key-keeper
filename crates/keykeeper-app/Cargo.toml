@@ -16,6 +16,15 @@ rune = { workspace = true }
 rune-kit = { workspace = true }
 rune-theme-opencode = { workspace = true }
 keykeeper-core = { workspace = true }
+directories = "6.0.0"
+toml = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+jiff = "1.0.3"
+uuid = "1.29.3"
+zeroize = "1.9.2"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

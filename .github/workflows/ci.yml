@@ -27,8 +27,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - name: Headless snapshot
-        run: cargo run -p keykeeper-app -- --snap target/snap-dark.png --theme dark --size 1100x640
+      - name: Headless snapshots of every screen (demo data)
+        shell: bash
+        run: |
+          cargo build -p keykeeper-app
+          for scene in lock create library detail new-key import import-start settings trades empty light; do
+            cargo run -q -p keykeeper-app -- --snap "target/snap-$scene.png" --scene "$scene" --size 1280x800 || true
+          done
         continue-on-error: true # CI runners may lack a GPU; RUNE falls back to WARP on Windows
       - uses: actions/upload-artifact@v4
         if: always()
