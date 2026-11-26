@@ -731,5 +731,18 @@ mod tests {
             76561197960287930
         );
         assert!(s.wishlist(76561197960287930).is_ok());
+        let d = s.store_details(&[1231880, 367520]).unwrap();
+        assert_eq!(d.len(), 2, "{d:?}");
+        let (hk, tags) = d.iter().find(|(d, _)| d.app_id == 367520).unwrap();
+        assert!(
+            !hk.description.is_empty() && !tags.is_empty(),
+            "{hk:?} {tags:?}"
+        );
+        let url = hk.header_url.clone().unwrap();
+        let img = s.download_image(&url).unwrap();
+        assert!(
+            img.len() > 10_000 && img.starts_with(&[0xFF, 0xD8]),
+            "a JPEG from {url}"
+        );
     }
 }
