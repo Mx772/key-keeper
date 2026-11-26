@@ -1899,9 +1899,9 @@ fn resting_on_a_name_opens_the_details_card_and_fetches_details_once() {
             .rows
             .iter()
             .filter_map(|id| s.repo.key(*id))
-            .find(|k| k.steam_app_id == Some(1231880))
+            .find(|k| k.steam_app_id.is_some())
             .unwrap();
-        (k.id, 1231880)
+        (k.id, k.steam_app_id.unwrap())
     };
     let (x, y) = rt.find(&format!("name-{id}")).expect("name cell");
     rt.pointer_move(x, y);
@@ -1928,7 +1928,9 @@ fn resting_on_a_name_opens_the_details_card_and_fetches_details_once() {
     );
     assert_eq!(
         downloads.lock().unwrap().as_slice(),
-        ["https://shared.akamai.steamstatic.com/1231880/header.jpg"]
+        [format!(
+            "https://shared.akamai.steamstatic.com/{app}/header.jpg"
+        )]
     );
 
     // The artwork is cached encrypted next to the vault: a fresh session reads it from disk.
@@ -1939,7 +1941,10 @@ fn resting_on_a_name_opens_the_details_card_and_fetches_details_once() {
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
-    assert!(names.iter().all(|n| !n.contains("1231880")), "{names:?}");
+    assert!(
+        names.iter().all(|n| !n.contains(&app.to_string())),
+        "{names:?}"
+    );
     let raw = std::fs::read(cache.dir().join(&names[0])).unwrap();
     assert!(!raw.windows(4).any(|w| w == b"\x89PNG"), "stored encrypted");
 
@@ -2380,4 +2385,127 @@ fn spares_and_duplicates_filters_and_have_list() {
         "traded keys aren't on the list"
     );
     assert!(!text.contains('-'), "no keys: {text}");
+}
+
+// ── table layout ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn column_menu_hides_columns_and_the_layout_survives_a_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("v.kkvault");
+    let cfg = dir.path().join("config.toml");
+    Vault::create(
+        &vault,
+        "pw-12345678",
+        KdfParams::INSECURE_FAST_FOR_TESTS,
+        &demo::sample_data(),
+    )
+    .unwrap();
+    let mut s = state_for(&vault);
+    s.config_path = Some(cfg.clone());
+    let mut rt = runtime(s);
+    rt.update(|s, _| s.lock_ui_mut().unwrap().password = TextEdit::new("pw-12345678"));
+    click(&mut rt, "lock-submit");
+    wait_for_unlock_result(&mut rt);
+    poll(&mut rt, 0.0);
+
+    right_click(&mut rt, "library-table");
+    // The click landed on a row (no header there): open the header menu by hand instead.
+    rt.update(|s, _| {
+        s.close_row_menu();
+        s.session_mut().unwrap().header_menu = Some(rune::PointerPress { x: 600.0, y: 300.0 });
+    });
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "col-platform");
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .table
+            .is_column_hidden("platform")
+    );
+    rt.update(|s, _| {
+        s.sort_by("name", rune_kit::SortDir::Ascending);
+        s.toggle_group_by_bundle();
+        s.set_density(crate::config::Density::Compact);
+    });
+    poll(&mut rt, 1.0);
+    poll(&mut rt, 3.0);
+    let saved = Config::load(&cfg);
+    assert_eq!(
+        saved.library.hidden_columns,
+        vec!["platform".to_string(), "added".to_string()]
+    );
+    assert_eq!(saved.library.sort.as_deref(), Some("name:asc"));
+    assert!(saved.library.group_by_bundle);
+    assert_eq!(saved.library.density, crate::config::Density::Compact);
+
+    // Lock and unlock: the table comes back the same.
+    rt.key(ctrl('l'));
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| s.lock_ui_mut().unwrap().password = TextEdit::new("pw-12345678"));
+    click(&mut rt, "lock-submit");
+    wait_for_unlock_result(&mut rt);
+    poll(&mut rt, 4.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.table.is_column_hidden("platform"));
+    assert!(s.group_by_bundle);
+    assert_eq!(s.sort.field, keykeeper_core::SortField::Name);
+}
+
+#[test]
+fn grouping_by_bundle_folds_and_unfolds() {
+    let mut rt = demo_rt();
+    rt.update(|s, _| s.toggle_group_by_bundle());
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    let groups: Vec<String> = s
+        .display
+        .iter()
+        .filter_map(|r| match r {
+            crate::layout::DisplayRow::Group { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        groups.last().map(String::as_str),
+        Some(crate::layout::NO_BUNDLE)
+    );
+    assert!(groups.contains(&"Humble Choice".to_string()));
+    let n = s.display.len();
+    assert_eq!(n, s.rows.len() + groups.len());
+
+    let first = groups[0].clone();
+    // Enter on a bundle header (keyboard cursor on it) folds it, through the table's handler.
+    rt.update(|s, tx| {
+        let x = s.session_mut().unwrap();
+        x.table.select(crate::layout::group_row_id(&first));
+        tx.focus("library-table", false);
+    });
+    rt.frame(1.0 / 60.0);
+    rt.key(KeyEvent::from(Key::Enter));
+    rt.frame(1.0 / 60.0);
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.collapsed.contains(&first), "{first} folds");
+    let humble = s
+        .rows
+        .iter()
+        .filter(|id| s.repo.key(**id).unwrap().bundle.as_deref() == Some(first.as_str()))
+        .count();
+    assert_eq!(s.display.len(), n - humble, "its keys are hidden");
+    assert_eq!(
+        s.selected_ids(),
+        Vec::<uuid::Uuid>::new(),
+        "a header isn't a key"
+    );
+
+    rt.update(|s, _| s.collapse_all_groups(true));
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().display.len(), groups.len());
+    rt.update(|s, _| s.collapse_all_groups(false));
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().display.len(), n);
 }

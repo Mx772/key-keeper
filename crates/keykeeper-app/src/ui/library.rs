@@ -4,7 +4,10 @@ use std::borrow::Cow;
 
 use keykeeper_core::{GameKey, KeyStatus};
 use rune::{Align, El, Tx, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Cell, Kit, Select, Table, TableColumn, TextInput};
+use rune_kit::{
+    Button, ButtonVariant, Cell, Kit, Menu, MenuEntry, MenuItem, Select, Table, TableColumn,
+    TextInput, context_menu,
+};
 use uuid::Uuid;
 
 use super::{
@@ -12,11 +15,13 @@ use super::{
     title_style,
 };
 use crate::app::{AppState, Page, Session, today};
+use crate::config::{Density, LibraryView};
 use crate::form::format_date;
+use crate::layout::{COLUMNS, DisplayRow, parse_group_id};
 
 fn key_at(s: &AppState, i: usize) -> Option<&GameKey> {
     let sess = s.session()?;
-    sess.rows.get(i).and_then(|id| sess.repo.key(*id))
+    sess.display_key(i).and_then(|id| sess.repo.key(id))
 }
 
 pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
@@ -182,6 +187,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .center_y()
         .child(search)
         .child(spacer())
+        .child(view_menu(s, sess, k, overlays))
         .child(
             el().key("copy-have-list").child(
                 Button::new("Copy have list")
@@ -209,7 +215,13 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     if total == 0 {
         page = page.child(empty_state(k));
     } else {
-        page = page.child(table(s, sess, k, overlays).grow(1.0).min_h(0.0));
+        page = page.child(
+            table(s, sess, k, overlays)
+                .w_full()
+                .min_w(0.0)
+                .grow(1.0)
+                .min_h(0.0),
+        );
     }
     if let Some(id) = s.hover_card_key()
         && let Some(key) = sess.repo.key(id)
@@ -634,12 +646,17 @@ fn parse_id(id: &str) -> Option<Uuid> {
 
 fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
     let kc = k.clone();
+    let row_height = match state.config.library.density {
+        Density::Comfortable => 32.0,
+        Density::Compact => 25.0,
+    };
+    let group_fill = k.c.text_base.alpha(0.05);
     let fmt = sess.date_format();
     let today = today();
     let s_view = Table::new(
         table_state,
         table_state_mut,
-        |s: &AppState| s.session().map_or(0, |x| x.rows.len()),
+        |s: &AppState| s.session().map_or(0, |x| x.display.len()),
         |s: &AppState, i| {
             Cow::Borrowed(
                 s.session()
@@ -652,45 +669,58 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
     .column(
         TableColumn::new("name", "Game")
             .flex(2.2)
-            .min(180.0)
+            .min(170.0)
             .sortable(),
     )
     .column(
         TableColumn::new("bundle", "Bundle")
-            .flex(1.5)
-            .min(120.0)
+            .flex(1.3)
+            .min(110.0)
             .sortable(),
     )
-    .column(TableColumn::new("key", "Key").width(200.0).min(150.0))
+    .column(TableColumn::new("key", "Key").width(170.0).min(140.0))
     .column(TableColumn::new("status", "Status").width(120.0).sortable())
     .column(
         TableColumn::new("platform", "Platform")
-            .width(100.0)
+            .width(90.0)
             .sortable(),
     )
     .column(
         TableColumn::new("deadline", "Deadline")
-            .width(110.0)
+            .width(100.0)
             .align(Align::End)
             .sortable(),
     )
     .column(
         TableColumn::new("rating", "Rating")
-            .width(80.0)
+            .width(70.0)
             .align(Align::End)
             .sortable(),
     )
-    .column(TableColumn::new("deals", "Deals").width(150.0).sortable())
-    .column(TableColumn::new("steam", "Steam").width(90.0))
+    .column(TableColumn::new("deals", "Deals").width(140.0).sortable())
+    .column(TableColumn::new("steam", "Steam").width(80.0))
     .column(
         TableColumn::new("added", "Added")
-            .width(110.0)
+            .width(100.0)
             .align(Align::End)
             .sortable(),
     )
+    .style(rune_kit::TableStyle {
+        row_height,
+        ..rune_kit::TableStyle::from_kit(k)
+    })
+    // Columns wider than the window scroll sideways instead of being cut off.
+    .scroll_wide(true)
     .cell(move |s: &AppState, i, col| {
         let Some(key) = key_at(s, i) else {
-            return Cell::text("");
+            return match s.session().and_then(|x| x.display.get(i)) {
+                Some(DisplayRow::Group {
+                    name,
+                    count,
+                    collapsed,
+                }) if col == "name" => Cell::el(group_cell(&kc, name, *count, *collapsed)),
+                _ => Cell::text(""),
+            };
         };
         match col {
             "name" => Cell::el(name_cell(&kc, key)),
@@ -698,7 +728,18 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
                 Some(p) => Cell::el(deal_cell(&kc, key.id, p)),
                 None => Cell::text(""),
             },
-            "bundle" => Cell::text(key.bundle.as_deref().unwrap_or("")).muted(),
+            "bundle" => match key.bundle.as_deref() {
+                // Long names are cut off: the whole name on hover.
+                Some(b) if b.chars().count() > 14 => Cell::el(
+                    text(b.to_string())
+                        .font(kc.ty.text_small)
+                        .color(kc.c.text_muted)
+                        .truncate()
+                        .min_w(0.0)
+                        .help(b.to_string()),
+                ),
+                b => Cell::text(b.unwrap_or("")).muted(),
+            },
             "key" => Cell::text(key.key.masked()).mono(),
             "platform" => Cell::text(key.platform.label()).muted(),
             "rating" => match key.steam.as_ref().and_then(|m| m.rating.as_ref()) {
@@ -753,38 +794,241 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
         }
     })
     .on_sort(|s: &mut AppState, col, dir, _| s.sort_by(col, dir))
-    .on_select(|s: &mut AppState, id, _| {
-        if let Some(id) = parse_id(id) {
+    .on_select(|s: &mut AppState, id, tx| {
+        if let Some(name) = parse_group_id(id) {
+            // A click on a bundle header folds it; arrowing onto it doesn't.
+            if tx.physical_key().is_none() {
+                s.toggle_group(name);
+            }
+        } else if let Some(id) = parse_id(id) {
             s.open_key(id);
         }
     })
     .on_open(|s: &mut AppState, id, tx| {
-        if let Some(id) = parse_id(id) {
+        if let Some(name) = parse_group_id(id) {
+            s.toggle_group(name);
+        } else if let Some(id) = parse_id(id) {
             s.open_key(id);
             tx.focus("form-name", true);
         }
     })
-    .row(|s: &AppState, i, row_el| {
-        let Some(id) = s.session().and_then(|x| x.rows.get(i).copied()) else {
-            return row_el;
-        };
-        row_el.on_secondary_press(move |s: &mut AppState, p, _| s.open_row_menu(id, Some(p)))
+    .on_header_secondary_press(|s: &mut AppState, _, p, _| {
+        s.hover = None;
+        if let Some(x) = s.session_mut() {
+            x.header_menu = Some(p);
+        }
+    })
+    .row(move |s: &AppState, i, row_el| {
+        let Some(x) = s.session() else { return row_el };
+        match x.display.get(i) {
+            Some(DisplayRow::Key(id)) => {
+                let id = *id;
+                row_el
+                    .on_secondary_press(move |s: &mut AppState, p, _| s.open_row_menu(id, Some(p)))
+            }
+            Some(DisplayRow::Group { name, .. }) => {
+                let name = name.clone();
+                let _ = name;
+                row_el.fill(group_fill).cursor(rune::Cursor::Pointer)
+            }
+            None => row_el,
+        }
     })
     .zebra(true)
     .build(state, k)
     .grow(1.0)
-    .min_h(0.0);
-    let frame = col()
+    .min_h(0.0)
+    .min_w(0.0);
+    let frame = column_menu(sess, frame_inner(k, s_view), k, overlays)
+        .w_full()
+        .min_w(0.0)
+        .grow(1.0)
+        .min_h(0.0);
+    super::row_menu::wrap(sess, frame, k, overlays)
+        .w_full()
+        .min_w(0.0)
+}
+
+fn frame_inner(k: &Kit, s_view: El) -> El {
+    col()
         .key("table-frame")
         // Before the table's own keys: the menu keys.
         .on_key_preview(|s: &mut AppState, ev, tx: &mut Tx| s.table_key_preview(ev, tx))
         .w_full()
+        .min_w(0.0)
         .grow(1.0)
         .min_h(0.0)
         .radius(k.radius.lg)
         .fill(k.c.bg_base)
         .border(1.0, k.c.border_weak)
         .clip_rounded(k.radius.lg)
-        .child(s_view);
-    super::row_menu::wrap(sess, frame, k, overlays)
+        .child(s_view)
+}
+
+/// A bundle's header row when grouping: fold arrow, name and how many keys.
+fn group_cell(k: &Kit, name: &str, count: usize, collapsed: bool) -> El {
+    row()
+        .key(format!("group-{name}"))
+        .label(format!(
+            "{name}, {count} keys, {}",
+            if collapsed { "collapsed" } else { "expanded" }
+        ))
+        .cursor(rune::Cursor::Pointer)
+        .gap(8.0)
+        .center_y()
+        .min_w(0.0)
+        .child(
+            rune::icon(
+                if collapsed {
+                    k.glyph.caret_right
+                } else {
+                    k.glyph.chevron_down
+                },
+                14.0,
+            )
+            .color(k.c.text_muted),
+        )
+        .child(
+            el().h(18.0)
+                .min_w(22.0)
+                .px(6.0)
+                .radius(9.0)
+                .center()
+                .fill(k.c.text_base.alpha(0.08))
+                .child(
+                    text(count.to_string())
+                        .font(k.ty.text_xsmall_medium)
+                        .color(k.c.text_muted),
+                ),
+        )
+        .child(
+            text(name.to_string())
+                .font(k.ty.text_small_medium)
+                .color(k.c.text_strong)
+                .truncate()
+                .min_w(0.0)
+                .help(name.to_string()),
+        )
+}
+
+/// Column checkboxes, shared by the View menu and the header's right-click menu.
+fn column_entries(sess: &Session) -> Vec<MenuEntry> {
+    let mut v: Vec<MenuEntry> = COLUMNS
+        .iter()
+        .map(|(id, title)| {
+            let id = id.to_string();
+            MenuEntry::item(
+                MenuItem::new(title.to_string())
+                    .key(format!("col-{id}"))
+                    .checked(!sess.table.is_column_hidden(&id))
+                    .on_select(move |s: &mut AppState| s.toggle_column(&id)),
+            )
+        })
+        .collect();
+    v.push(MenuEntry::Separator);
+    v.push(MenuEntry::item(
+        MenuItem::new("Reset columns")
+            .key("col-reset")
+            .on_select(|s: &mut AppState| s.reset_columns()),
+    ));
+    v
+}
+
+/// Right-click on a column header: which columns show.
+fn column_menu(sess: &Session, area: El, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let mut m = context_menu("header-menu", area, sess.header_menu)
+        .label("Columns")
+        .min_width(200.0)
+        .on_close(|s: &mut AppState| s.close_view_menu());
+    if sess.header_menu.is_some() {
+        m = m.group_label("Show columns");
+        for e in column_entries(sess) {
+            m = match e {
+                MenuEntry::Item(i) => m.item(*i),
+                MenuEntry::Separator => m.separator(),
+                MenuEntry::Label(l) => m.group_label(l),
+            };
+        }
+    }
+    m.build(k, overlays)
+}
+
+/// The View menu: table or grid, row density, grouping and columns.
+fn view_menu(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
+    let lay = &s.config.library;
+    let trigger = el().key("view-menu-button").child(
+        Button::new("View")
+            .variant(ButtonVariant::Ghost)
+            .icon(k.glyph.chevron_down)
+            .on_press(|s: &mut AppState| s.toggle_view_menu())
+            .build(k),
+    );
+    let grid = lay.view == LibraryView::Grid;
+    let compact = lay.density == Density::Compact;
+    let mut m = Menu::new("view-menu")
+        .trigger(trigger)
+        .open(sess.view_menu)
+        .label("View")
+        .min_width(220.0)
+        .on_close(|s: &mut AppState| s.close_view_menu())
+        .group_label("Layout")
+        .item(
+            MenuItem::new("Table")
+                .key("view-table")
+                .checked(!grid)
+                .on_select(|s: &mut AppState| s.set_library_view(LibraryView::Table)),
+        )
+        .item(
+            MenuItem::new("Grid with artwork")
+                .key("view-grid")
+                .checked(grid)
+                .on_select(|s: &mut AppState| s.set_library_view(LibraryView::Grid)),
+        )
+        .separator()
+        .group_label("Rows")
+        .item(
+            MenuItem::new("Comfortable")
+                .key("density-comfortable")
+                .checked(!compact)
+                .on_select(|s: &mut AppState| s.set_density(Density::Comfortable)),
+        )
+        .item(
+            MenuItem::new("Compact")
+                .key("density-compact")
+                .checked(compact)
+                .on_select(|s: &mut AppState| s.set_density(Density::Compact)),
+        )
+        .separator()
+        .item(
+            MenuItem::new("Group by bundle")
+                .key("group-by-bundle")
+                .checked(sess.group_by_bundle)
+                .on_select(|s: &mut AppState| s.toggle_group_by_bundle()),
+        );
+    if sess.group_by_bundle {
+        m = m
+            .item(
+                MenuItem::new("Collapse all bundles")
+                    .key("groups-collapse")
+                    .on_select(|s: &mut AppState| s.collapse_all_groups(true)),
+            )
+            .item(
+                MenuItem::new("Expand all bundles")
+                    .key("groups-expand")
+                    .on_select(|s: &mut AppState| s.collapse_all_groups(false)),
+            );
+    }
+    if !grid {
+        m = m.separator().item(
+            MenuItem::new("Columns")
+                .key("view-columns")
+                .submenu(column_entries(sess), sess.view_columns_open)
+                .on_submenu(|s: &mut AppState, open| {
+                    if let Some(x) = s.session_mut() {
+                        x.view_columns_open = open;
+                    }
+                }),
+        );
+    }
+    m.build(k, overlays)
 }

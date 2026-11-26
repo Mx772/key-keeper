@@ -46,7 +46,7 @@ pub enum Density {
 }
 
 /// How the library table looks; remembered between sessions.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LibraryLayout {
     pub view: LibraryView,
@@ -57,6 +57,21 @@ pub struct LibraryLayout {
     pub column_order: Vec<String>,
     /// `"<column>:<asc|desc>"`.
     pub sort: Option<String>,
+}
+
+impl Default for LibraryLayout {
+    fn default() -> Self {
+        LibraryLayout {
+            view: LibraryView::default(),
+            density: Density::default(),
+            group_by_bundle: false,
+            // The date added is the default sort; the column itself is optional.
+            hidden_columns: vec!["added".into()],
+            column_widths: BTreeMap::new(),
+            column_order: Vec::new(),
+            sort: None,
+        }
+    }
 }
 
 pub const DEFAULT_HOVER_DELAY_MS: u32 = 450;

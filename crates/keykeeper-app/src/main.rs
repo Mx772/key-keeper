@@ -16,6 +16,7 @@ mod config;
 mod demo;
 mod form;
 mod info;
+mod layout;
 mod library_actions;
 mod price_actions;
 mod selftest;
@@ -102,6 +103,18 @@ const SCENES: &[Scene] = &[
             x.bulk = Some(bulk::BulkForm::new(ids));
         }
         s.with_bulk(|b| b.add_tags = rune::TextEdit::new("humble-2026"));
+    }),
+    ("grouped", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.toggle_group_by_bundle();
+        s.toggle_group("Fanatical Mystery");
+    }),
+    ("view-menu", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.toggle_view_menu();
+        if let Some(x) = s.session_mut() {
+            x.view_columns_open = true;
+        }
     }),
     ("cart-button", |s| {
         demo::unlock(s, demo::sample_data());

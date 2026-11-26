@@ -176,7 +176,17 @@ pub struct Session {
     pub sort: Sort,
     pub query_rev: u64,
     pub rows: Vec<Uuid>,
+    /// What the table shows, row by row (keys, and bundle headers when grouping).
+    pub display: Vec<crate::layout::DisplayRow>,
+    /// Ids of `display`'s rows, for the table.
     pub row_ids: Vec<String>,
+    pub group_by_bundle: bool,
+    /// Bundles folded shut while grouping.
+    pub collapsed: std::collections::HashSet<String>,
+    /// The library's View menu, its Columns submenu, and the column menu on a header.
+    pub view_menu: bool,
+    pub view_columns_open: bool,
+    pub header_menu: Option<rune::PointerPress>,
     rows_stamp: Option<(u64, u64)>,
     pub table: TableState,
     pub form: Option<KeyForm>,
@@ -238,7 +248,13 @@ impl Session {
             sort: Sort::default(),
             query_rev: 0,
             rows: Vec::new(),
+            display: Vec::new(),
             row_ids: Vec::new(),
+            group_by_bundle: false,
+            collapsed: std::collections::HashSet::new(),
+            view_menu: false,
+            view_columns_open: false,
+            header_menu: None,
             rows_stamp: None,
             table: TableState::new().key("library-table").multi_select(true),
             form: None,
@@ -305,7 +321,7 @@ impl Session {
             return false;
         }
         self.rows = self.repo.query(&self.query(), today);
-        self.row_ids = self.rows.iter().map(Uuid::to_string).collect();
+        self.rebuild_display();
         self.rows_stamp = Some(stamp);
         true
     }
@@ -376,6 +392,8 @@ pub struct AppState {
     /// Keys were just added to the cart: the floating cart button springs up until this time.
     cart_bump_until: f64,
     pub(crate) cart_bump_pending: bool,
+    /// When to write the library layout to config.toml (after a column drag settles).
+    pub(crate) layout_save_at: Option<f64>,
     /// Store details and artwork (hover card, grid, editor header).
     pub info: crate::info::GameInfo,
     /// The game name the pointer is resting on, for the hover card.
@@ -421,6 +439,7 @@ impl AppState {
             updates: Updates::new(crate::update::real_source()),
             cart_bump_until: 0.0,
             cart_bump_pending: false,
+            layout_save_at: None,
             info: crate::info::GameInfo::default(),
             hover: None,
             offline: false,
@@ -675,6 +694,7 @@ impl AppState {
         self.info.attach(vault.blob_cache());
         self.hover = None;
         let mut session = Session::new(vault, data);
+        session.apply_layout(&self.config.library);
         session.refresh_rows(today());
         self.screen = Screen::Unlocked(Box::new(session));
         self.last_activity = self.now;
@@ -710,6 +730,7 @@ impl AppState {
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
         changed |= self.finish_info();
+        self.poll_layout(now, tx);
         changed |= self.poll_hover(now, tx);
         changed |= self.poll_updates(now, tx);
         if std::mem::take(&mut self.cart_bump_pending) {
@@ -791,6 +812,9 @@ impl AppState {
 
     /// Window closing: flush unsaved changes and clear a copied key.
     pub fn on_close(&mut self, tx: &mut Tx) {
+        if self.layout_save_at.take().is_some() {
+            self.save_config();
+        }
         if let Screen::Unlocked(s) = &mut self.screen {
             s.sync_trade_form();
             if s.is_dirty() {
@@ -1106,24 +1130,9 @@ impl AppState {
     }
 
     pub fn sort_by(&mut self, column: &str, dir: rune_kit::SortDir) {
-        let field = match column {
-            "name" => SortField::Name,
-            "bundle" => SortField::Bundle,
-            "status" => SortField::Status,
-            "platform" => SortField::Platform,
-            "deadline" => SortField::Deadline,
-            "source" => SortField::Source,
-            "rating" => SortField::Rating,
-            "deals" => SortField::Price,
-            _ => SortField::Added,
-        };
-        let dir = if matches!(dir, rune_kit::SortDir::Descending) {
-            SortDir::Desc
-        } else {
-            SortDir::Asc
-        };
         if let Some(s) = self.session_mut() {
-            s.sort = Sort { field, dir };
+            s.sort = sort_for(column, dir);
+            s.table.set_sort(column.to_string(), dir);
             s.filters_changed();
         }
     }
@@ -1421,6 +1430,8 @@ impl AppState {
                     return false;
                 };
                 if std::mem::take(&mut s.shortcuts_open)
+                    || std::mem::take(&mut s.view_menu)
+                    || s.header_menu.take().is_some()
                     || s.row_menu.take().is_some()
                     || s.bulk.take().is_some()
                     || s.confirm.take().is_some()
@@ -1435,6 +1446,27 @@ impl AppState {
             _ => false,
         }
     }
+}
+
+/// The query sort for a table column and direction.
+pub fn sort_for(column: &str, dir: rune_kit::SortDir) -> Sort {
+    let field = match column {
+        "name" => SortField::Name,
+        "bundle" => SortField::Bundle,
+        "status" => SortField::Status,
+        "platform" => SortField::Platform,
+        "deadline" => SortField::Deadline,
+        "source" => SortField::Source,
+        "rating" => SortField::Rating,
+        "deals" => SortField::Price,
+        _ => SortField::Added,
+    };
+    let dir = if matches!(dir, rune_kit::SortDir::Descending) {
+        SortDir::Desc
+    } else {
+        SortDir::Asc
+    };
+    Sort { field, dir }
 }
 
 fn refresh_form(s: &mut Session, fmt: DateFormat) {
