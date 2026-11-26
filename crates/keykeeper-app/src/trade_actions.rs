@@ -81,6 +81,7 @@ impl TradeForm {
 pub struct TemplatesUi {
     pub checkout: TextEdit,
     pub rep: TextEdit,
+    pub have: TextEdit,
 }
 
 impl TemplatesUi {
@@ -88,7 +89,12 @@ impl TemplatesUi {
         TemplatesUi {
             checkout: TextEdit::new(t.checkout_line.clone()),
             rep: TextEdit::new(t.rep.clone()),
+            have: TextEdit::new(t.have_line.clone()),
         }
+    }
+
+    pub fn have_errors(&self) -> Vec<TemplateError> {
+        template::check(&self.have.text, &[template::HAVE_VARS])
     }
 
     pub fn checkout_errors(&self) -> Vec<TemplateError> {
@@ -103,6 +109,7 @@ impl TemplatesUi {
         Templates {
             checkout_line: self.checkout.text.clone(),
             rep: self.rep.text.clone(),
+            have_line: self.have.text.clone(),
         }
     }
 }
@@ -125,6 +132,8 @@ pub fn sample_var(name: &str, date: &str) -> Option<String> {
             "count" => "2",
             "games" => "Undertale, Celeste",
             "received" => "Tunic, A Short Hike",
+            "rating" => "94%",
+            "price" => "$4.99",
             _ => return None,
         }
         .to_string(),
@@ -428,7 +437,11 @@ impl AppState {
 
     pub fn save_templates(&mut self) {
         let Some(s) = self.session_mut() else { return };
-        if !s.templates_ui.checkout_errors().is_empty() || !s.templates_ui.rep_errors().is_empty() {
+        let t = &s.templates_ui;
+        if !t.checkout_errors().is_empty()
+            || !t.rep_errors().is_empty()
+            || !t.have_errors().is_empty()
+        {
             return;
         }
         s.repo.set_templates(s.templates_ui.to_templates());
@@ -475,7 +488,7 @@ mod tests {
 
     #[test]
     fn sample_vars_cover_every_variable() {
-        for v in KEY_VARS.iter().chain(TRADE_VARS) {
+        for v in KEY_VARS.iter().chain(TRADE_VARS).chain(template::HAVE_VARS) {
             assert!(sample_var(v, "1/7/2026").is_some(), "{v}");
         }
     }

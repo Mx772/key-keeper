@@ -25,7 +25,7 @@ pub use model::{
     Settings, SteamMeta, SteamRating, Trade, TradeSite, TradeStatus,
 };
 pub use prices::{GamePrices, Money, ShopPrice};
-pub use query::{Query, Sort, SortDir, SortField};
+pub use query::{Query, Sort, SortDir, SortField, game_identity};
 pub use repo::Repo;
 pub use secret::Secret;
 pub use template::Templates;

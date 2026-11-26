@@ -147,7 +147,27 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
             "No Steam id",
             sess.missing_app_id,
             |s| s.toggle_missing_app_id(),
-        ));
+        ))
+        .child(
+            chip(
+                k,
+                "filter-fodder",
+                "Spares I own",
+                sess.trade_fodder,
+                |s| s.toggle_trade_fodder(),
+            )
+            .help("Keys still in hand for games you already own on Steam (Settings › Steam › Check library)"),
+        )
+        .child(
+            chip(
+                k,
+                "filter-dupes",
+                "Duplicates",
+                sess.duplicates,
+                |s| s.toggle_duplicates(),
+            )
+            .help("Games you have more than one key for"),
+        );
     let filters = row()
         .w_full()
         .gap(6.0)
@@ -156,7 +176,22 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .child(chips)
         .child(el().w(12.0))
         .child(toggles);
-    let toolbar = col().w_full().gap(12.0).child(search).child(filters);
+    let search_row = row()
+        .w_full()
+        .gap(10.0)
+        .center_y()
+        .child(search)
+        .child(spacer())
+        .child(
+            el().key("copy-have-list").child(
+                Button::new("Copy have list")
+                    .variant(ButtonVariant::Ghost)
+                    .help("Copy the names of the tradable keys in view, for a trading site's \"have\" list (no keys)")
+                    .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.copy_have_list(tx))
+                    .build(k),
+            ),
+        );
+    let toolbar = col().w_full().gap(12.0).child(search_row).child(filters);
 
     let mut page = col()
         .key("library")
@@ -516,6 +551,20 @@ fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
                 })
                 .a11y_hidden(),
         )
+        .children(at_low.then(|| {
+            el().key(format!("atl-{id}"))
+                .h(16.0)
+                .px(5.0)
+                .radius(4.0)
+                .center()
+                .fill(k.c.success.icon.alpha(0.18))
+                .child(
+                    text("LOW")
+                        .font(rune::TextStyle::new(9.5, 700.0).tracking(0.6))
+                        .color(k.c.success.icon)
+                        .a11y_hidden(),
+                )
+        }))
         .child(
             text(shop.unwrap_or("best store").to_string())
                 .font(k.ty.text_small)
@@ -531,7 +580,11 @@ fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
     for r in rows {
         e = e.help_row(r);
     }
-    e = e.label(format!("Best price {}", best.format()));
+    e = e.label(if at_low {
+        format!("Best price {}, its all-time low", best.format())
+    } else {
+        format!("Best price {}", best.format())
+    });
     if let Some(url) = super::price_url(p) {
         e = e
             .role("link")

@@ -257,7 +257,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
         let out = template::render(tpl, |v| sample_var(v, &sample_date)).unwrap_or_default();
         super::cart::text_block(k, key, out)
     };
-    let (ce, re) = (tu.checkout_errors(), tu.rep_errors());
+    let (ce, re, he) = (tu.checkout_errors(), tu.rep_errors(), tu.have_errors());
     let changed = tu.to_templates() != sess.repo.data().templates;
     let templates = card(
         k,
@@ -282,9 +282,17 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             ))
             .child(muted(k, "Trade variables only — keys can't appear in a public post.").wrap())
             .child(preview(&tu.rep.text, &re, "tpl-rep-preview"))
+            .child(field(
+                k,
+                "Have list (one line per game, from Copy have list in the library)",
+                TextInput::new(&tu.have).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.have)).build(k).key("tpl-have"),
+                None,
+            ))
+            .child(muted(k, "{name} {count} {steam_url} {bundle} {platform} {rating} {price} — {count} is \" x2\" for two copies, empty for one. Never includes keys.").wrap())
+            .child(preview(&tu.have.text, &he, "tpl-have-preview"))
             .child(
                 hstack()
-                    .child(primary(k, "tpl-save", "Save templates", changed && ce.is_empty() && re.is_empty(), |s, _| s.save_templates()))
+                    .child(primary(k, "tpl-save", "Save templates", changed && ce.is_empty() && re.is_empty() && he.is_empty(), |s, _| s.save_templates()))
                     .child(el().key("tpl-reset").child(Button::new("Reset to defaults").variant(ButtonVariant::GhostMuted).on_press(|s: &mut AppState| s.reset_templates()).build(k))),
             ),
     );

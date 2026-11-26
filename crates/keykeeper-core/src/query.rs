@@ -63,7 +63,27 @@ pub struct Query {
     pub deadline_within_days: Option<i64>,
     /// Only keys without a Steam app id (to batch-match).
     pub missing_app_id: bool,
+    /// Only keys still in hand for games already owned on Steam: spares to trade away.
+    pub trade_fodder: bool,
+    /// Only games with more than one key (any status).
+    pub duplicates: bool,
     pub sort: Sort,
+}
+
+/// What makes two keys "the same game": the Steam app id, else the name in lowercase with only
+/// letters and digits ("Hollow Knight" and "hollow-knight" match).
+pub fn game_identity(k: &GameKey) -> String {
+    match k.steam_app_id {
+        Some(a) => format!("app:{a}"),
+        None => format!(
+            "name:{}",
+            k.game_name
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .flat_map(char::to_lowercase)
+                .collect::<String>()
+        ),
+    }
 }
 
 impl Query {
@@ -86,12 +106,26 @@ impl Repo {
         let limit = q
             .deadline_within_days
             .and_then(|d| today.checked_add(Span::new().days(d)).ok());
+        let mut copies: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        if q.duplicates {
+            for k in self.keys() {
+                *copies.entry(game_identity(k)).or_default() += 1;
+            }
+        }
         let mut hits: Vec<&GameKey> = self
             .keys()
             .iter()
             .filter(|k| q.statuses.is_empty() || q.statuses.contains(&k.status))
             .filter(|k| q.platforms.is_empty() || q.platforms.contains(&k.platform))
             .filter(|k| !q.missing_app_id || k.steam_app_id.is_none())
+            .filter(|k| {
+                !q.trade_fodder
+                    || (k.status.can_trade()
+                        && k.steam
+                            .as_ref()
+                            .is_some_and(|m| m.ownership == crate::model::Ownership::Owned))
+            })
+            .filter(|k| !q.duplicates || copies.get(&game_identity(k)).copied().unwrap_or(0) > 1)
             .filter(|k| match (q.deadline_within_days, limit) {
                 (None, _) => true,
                 (Some(_), Some(limit)) => {
@@ -403,5 +437,57 @@ mod tests {
             ["Alpha", "game", "Game 1", "game 2", "Game 02", "Game 10"]
         );
         assert_eq!(natural_cmp("Hades II", "hades ii"), Ordering::Equal);
+    }
+
+    #[test]
+    fn trade_fodder_and_duplicates() {
+        let mut r = repo();
+        let owned = |k: &mut GameKey| {
+            k.steam = Some(SteamMeta {
+                rating: None,
+                ownership: crate::model::Ownership::Owned,
+                fetched_at: jiff::Timestamp::now(),
+            })
+        };
+        let mut spare = GameKey::new("Haiku, the Robot", "HA1KU-R0B0T-99999");
+        spare.steam_app_id = Some(1);
+        owned(&mut spare);
+        let mut gone = GameKey::new("Owned but traded", "OWNED-TRADE-00001");
+        gone.status = KeyStatus::Traded;
+        owned(&mut gone);
+        let same_name = GameKey::new("game-2", "GAME2-AGAIN-00002");
+        r.add_keys(vec![spare, gone, same_name], "more");
+
+        let q = Query {
+            trade_fodder: true,
+            ..Query::default()
+        };
+        assert_eq!(
+            names(&r, &q),
+            ["Haiku, the Robot"],
+            "only spares still in hand"
+        );
+
+        let q = Query {
+            duplicates: true,
+            sort: Sort {
+                field: SortField::Name,
+                dir: SortDir::Asc,
+            },
+            ..Query::default()
+        };
+        assert_eq!(
+            names(&r, &q),
+            ["Game 2", "game-2", "Haiku, the Robot", "Haiku, the Robot"],
+            "same app id, or the same name ignoring case and punctuation"
+        );
+    }
+
+    #[test]
+    fn identity() {
+        let mut a = GameKey::new("Hollow Knight", "X");
+        assert_eq!(game_identity(&a), "name:hollowknight");
+        a.steam_app_id = Some(367520);
+        assert_eq!(game_identity(&a), "app:367520");
     }
 }

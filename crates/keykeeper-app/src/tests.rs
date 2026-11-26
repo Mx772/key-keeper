@@ -2327,3 +2327,57 @@ fn stats_count_tradable_keys_value_and_deadlines() {
     );
     assert!(rt.find("nav-expiring").is_some(), "sidebar badge");
 }
+
+// ── trading helpers ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn spares_and_duplicates_filters_and_have_list() {
+    let mut rt = demo_rt();
+    let board = rune::clipboard::memory();
+    rt.use_clipboard(&board);
+
+    click(&mut rt, "filter-fodder");
+    poll(&mut rt, 0.0);
+    // Demo: Undertale and Hollow Knight are owned, but both keys are already traded.
+    assert!(shown(&rt).is_empty());
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let id = x
+            .repo
+            .keys()
+            .iter()
+            .find(|k| k.game_name == "Hollow Knight")
+            .unwrap()
+            .id;
+        let _ = x.repo.update_key(id, |k| k.status = KeyStatus::Available);
+    });
+    poll(&mut rt, 0.0);
+    assert_eq!(shown(&rt), ["Hollow Knight"]);
+    click(&mut rt, "filter-fodder");
+
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let mut k = keykeeper_core::GameKey::new("Tunic", "TUN1C-SECND-COPY2");
+        k.steam_app_id = Some(553420);
+        x.repo.add_key(k);
+    });
+    click(&mut rt, "filter-dupes");
+    poll(&mut rt, 0.0);
+    assert_eq!(shown(&rt), ["Tunic", "Tunic"]);
+
+    click(&mut rt, "copy-have-list");
+    assert_eq!(
+        board.text().as_deref().map(String::as_str),
+        Some("Tunic x2")
+    );
+    click(&mut rt, "filter-dupes");
+    poll(&mut rt, 0.0);
+    click(&mut rt, "copy-have-list");
+    let text = board.text().unwrap().to_string();
+    assert!(text.contains("Hollow Knight") && text.contains("Tunic x2"));
+    assert!(
+        !text.contains("Undertale"),
+        "traded keys aren't on the list"
+    );
+    assert!(!text.contains('-'), "no keys: {text}");
+}

@@ -197,6 +197,9 @@ pub struct Session {
     pub candidates: Option<Candidates>,
     pub steam_ui: SteamUi,
     pub missing_app_id: bool,
+    /// Filters: spares of games I own on Steam, and games with several keys.
+    pub trade_fodder: bool,
+    pub duplicates: bool,
     // persistence
     seen_gen: u64,
     dirty_since: Option<f64>,
@@ -252,6 +255,8 @@ impl Session {
             candidates: None,
             steam_ui,
             missing_app_id: false,
+            trade_fodder: false,
+            duplicates: false,
             seen_gen: gen_,
             dirty_since: None,
             save_error: None,
@@ -286,6 +291,8 @@ impl Session {
             statuses,
             deadline_within_days: self.deadline_soon.then_some(30),
             missing_app_id: self.missing_app_id,
+            trade_fodder: self.trade_fodder,
+            duplicates: self.duplicates,
             sort: self.sort,
             ..Query::default()
         }
@@ -1054,6 +1061,40 @@ impl AppState {
         if let Some(s) = self.session_mut() {
             s.missing_app_id = !s.missing_app_id;
             s.filters_changed();
+        }
+    }
+
+    pub fn toggle_trade_fodder(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.trade_fodder = !s.trade_fodder;
+            s.filters_changed();
+        }
+    }
+
+    pub fn toggle_duplicates(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.duplicates = !s.duplicates;
+            s.filters_changed();
+        }
+    }
+
+    /// Copy the game names of the tradable keys in view, for a trading site's "have" list.
+    pub fn copy_have_list(&mut self, tx: &mut Tx) {
+        let Some(s) = self.session() else { return };
+        let line = s.repo.data().templates.have_line.clone();
+        match keykeeper_core::template::have_list(&s.repo, &s.rows, &line) {
+            Ok((_, 0)) => self.toast("No tradable keys in view (Available or Unknown)"),
+            Ok((text, n)) => {
+                tx.copy(text);
+                self.toast_detail(
+                    format!(
+                        "Copied a have list of {n} game{}",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    "Game names only, no keys. Change the line format in Settings › Templates.",
+                );
+            }
+            Err(e) => self.toast_error("Couldn't build the have list", e.to_string()),
         }
     }
 
