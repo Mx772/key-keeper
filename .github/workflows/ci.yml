@@ -42,6 +42,26 @@ jobs:
           path: target/snap-*.png
           if-no-files-found: ignore
 
+  # Line coverage of the GUI-free crates (the app needs RUNE and a GPU, so it is left out).
+  # keykeeper-core must stay at or above 80%.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage (core + steam)
+        run: cargo llvm-cov -p keykeeper-core -p keykeeper-steam --summary-only
+      - name: keykeeper-core line coverage >= 80%
+        # Reuses the profile data from the previous step; only core's files count here.
+        run: >
+          cargo llvm-cov report -p keykeeper-core --summary-only
+          --ignore-filename-regex 'keykeeper-steam'
+          --fail-under-lines 80
+
   deny:
     runs-on: ubuntu-latest
     steps:
