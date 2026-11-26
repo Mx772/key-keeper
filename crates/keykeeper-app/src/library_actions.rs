@@ -183,3 +183,88 @@ impl AppState {
         }
     }
 }
+
+/// Numbers for the strip under the library title.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LibraryStats {
+    pub total: usize,
+    /// Available or Unknown: keys still in hand.
+    pub tradable: usize,
+    pub in_cart: usize,
+    /// Still held with a deadline within 30 days, or past.
+    pub expiring: usize,
+    pub expired: usize,
+    /// Sum of the cheapest current price of each tradable key that has one, when they all share
+    /// one currency.
+    pub value: Option<keykeeper_core::Money>,
+    /// How many tradable keys the value counts.
+    pub priced: usize,
+}
+
+/// Deadlines this close count as "expiring soon".
+pub const SOON_DAYS: i64 = 30;
+
+impl Session {
+    pub fn stats(&self, today: jiff::civil::Date) -> LibraryStats {
+        let mut st = LibraryStats {
+            total: self.repo.keys().len(),
+            in_cart: self.repo.cart_len(),
+            ..LibraryStats::default()
+        };
+        let mut currency: Option<String> = None;
+        let mut cents = 0u64;
+        let mut mixed = false;
+        for k in self.repo.keys() {
+            if !k.status.is_gone()
+                && let Some(d) = k.redemption_deadline
+            {
+                let days = (d - today).get_days();
+                if days < 0 {
+                    st.expired += 1;
+                    st.expiring += 1;
+                } else if i64::from(days) <= SOON_DAYS {
+                    st.expiring += 1;
+                }
+            }
+            if k.status.can_trade() {
+                st.tradable += 1;
+                if let Some((m, _)) = self.repo.key_prices(k).and_then(|p| p.best()) {
+                    match &currency {
+                        None => currency = Some(m.currency.clone()),
+                        Some(c) if *c != m.currency => mixed = true,
+                        _ => {}
+                    }
+                    cents += m.cents;
+                    st.priced += 1;
+                }
+            }
+        }
+        if !mixed && let Some(c) = currency {
+            st.value = Some(keykeeper_core::Money::new(cents, c));
+        }
+        st
+    }
+}
+
+impl AppState {
+    /// Show only keys of one status (or every status again, if that's the current filter).
+    pub fn only_status(&mut self, status: KeyStatus) {
+        if let Some(s) = self.session_mut() {
+            s.statuses = if s.statuses == [status] {
+                Vec::new()
+            } else {
+                vec![status]
+            };
+            s.filters_changed();
+        }
+    }
+
+    /// The expiring badge / stat: show keys whose deadline is near.
+    pub fn show_expiring(&mut self) {
+        self.go(Page::Library);
+        if let Some(s) = self.session_mut() {
+            s.deadline_soon = true;
+            s.filters_changed();
+        }
+    }
+}

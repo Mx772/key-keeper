@@ -36,13 +36,20 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .gap(10.0)
         .child(
             col()
-                .gap(4.0)
+                .gap(6.0)
                 .child(
                     text("My Library")
                         .font(title_style())
                         .color(k.c.text_strong),
                 )
-                .child(muted(k, subtitle).key("library-count")),
+                .child(
+                    row()
+                        .gap(10.0)
+                        .center_y()
+                        .flex_wrap()
+                        .child(muted(k, subtitle).key("library-count"))
+                        .children(stats_strip(sess, k)),
+                ),
         )
         .child(spacer())
         .child(
@@ -181,6 +188,110 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         ));
     }
     page
+}
+
+/// A small clickable figure in the stats strip.
+fn stat(k: &Kit, key: &str, label: String, color: rune::Color, on: bool, help: &str) -> El {
+    row()
+        .key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .h(22.0)
+        .px(9.0)
+        .radius(11.0)
+        .center_y()
+        .fill(if on {
+            color.alpha(0.22)
+        } else {
+            color.alpha(0.10)
+        })
+        .hover(color.alpha(0.22))
+        .cursor(rune::Cursor::Pointer)
+        .help(help.to_string())
+        .child(
+            text(label)
+                .font(k.ty.text_xsmall_medium)
+                .color(color)
+                .a11y_hidden(),
+        )
+}
+
+/// "12 to trade · 2 in cart · ~$143 value · 3 expiring", each one a shortcut to its filter.
+fn stats_strip(sess: &Session, k: &Kit) -> Option<El> {
+    let st = sess.stats(today());
+    if st.total == 0 {
+        return None;
+    }
+    let mut r = row().key("library-stats").gap(6.0).center_y();
+    r = r.child(
+        stat(
+            k,
+            "stat-tradable",
+            format!("{} to trade", st.tradable),
+            k.c.success.icon,
+            sess.statuses == [KeyStatus::Available],
+            "Keys still in hand (Available or Unknown). Click to show Available keys.",
+        )
+        .on_press(|s: &mut AppState| s.only_status(KeyStatus::Available)),
+    );
+    if st.in_cart > 0 {
+        r = r.child(
+            stat(
+                k,
+                "stat-cart",
+                format!("{} in cart", st.in_cart),
+                k.c.info.icon,
+                false,
+                "Go to the cart",
+            )
+            .on_press(|s: &mut AppState| s.go(Page::Cart)),
+        );
+    }
+    if let Some(v) = &st.value
+        && st.priced > 0
+    {
+        r = r.child(
+            stat(
+                k,
+                "stat-value",
+                format!("~{} value", v.format()),
+                k.c.text_accent,
+                false,
+                "The cheapest current store price of each key still in hand, added up. Click to sort by price.",
+            )
+            .on_press(|s: &mut AppState| s.sort_by("deals", rune_kit::SortDir::Descending)),
+        );
+    }
+    if st.expiring > 0 {
+        let label = if st.expired > 0 && st.expiring > st.expired {
+            format!(
+                "{} expiring · {} past deadline",
+                st.expiring - st.expired,
+                st.expired
+            )
+        } else if st.expired > 0 {
+            format!("{} past deadline", st.expired)
+        } else {
+            format!("{} expiring soon", st.expiring)
+        };
+        r = r.child(
+            stat(
+                k,
+                "stat-expiring",
+                label,
+                if st.expired > 0 {
+                    k.c.danger.icon
+                } else {
+                    k.c.warning.icon
+                },
+                sess.deadline_soon,
+                "Keys you still hold whose redemption deadline is within 30 days or already past.",
+            )
+            .on_press(|s: &mut AppState| s.toggle_deadline_soon()),
+        );
+    }
+    Some(r)
 }
 
 fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
@@ -433,6 +544,37 @@ fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
     e
 }
 
+/// Near deadlines read as "in 12 days" / "3 days ago" (the date on hover); far ones as dates.
+fn deadline_cell(
+    k: &Kit,
+    key: &GameKey,
+    fmt: keykeeper_core::DateFormat,
+    today: jiff::civil::Date,
+) -> Cell {
+    let Some(d) = key.redemption_deadline else {
+        return Cell::text("");
+    };
+    let date = format_date(Some(d), fmt);
+    if key.status.is_gone() {
+        return Cell::text(date).muted();
+    }
+    let days = (d - today).get_days();
+    let (label, color) = match days {
+        ..0 => (super::card::relative_days(d, today), k.c.danger.icon),
+        0..=30 => (super::card::relative_days(d, today), k.c.warning.icon),
+        31..=60 => (super::card::relative_days(d, today), k.c.text_base),
+        _ => return Cell::text(date).muted(),
+    };
+    Cell::el(
+        row().w_full().justify_end().child(
+            text(label)
+                .font(k.ty.text_small_medium)
+                .color(color)
+                .help(format!("Redeem by {date}")),
+        ),
+    )
+}
+
 fn parse_id(id: &str) -> Option<Uuid> {
     Uuid::parse_str(id).ok()
 }
@@ -533,18 +675,7 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
                 Some(keykeeper_core::Ownership::NotOwned) => Cell::text(""),
                 _ => Cell::text(""),
             },
-            "deadline" => {
-                let label = format_date(key.redemption_deadline, fmt);
-                match key.redemption_deadline {
-                    Some(d) if !key.status.is_gone() && d < today => {
-                        Cell::text(label).color(kc.c.danger.icon)
-                    }
-                    Some(d) if !key.status.is_gone() && (d - today).get_days() <= 30 => {
-                        Cell::text(label).color(kc.c.warning.icon)
-                    }
-                    _ => Cell::text(label).muted(),
-                }
-            }
+            "deadline" => deadline_cell(&kc, key, fmt, today),
             "added" => Cell::text(format_date(
                 Some(
                     key.created_at

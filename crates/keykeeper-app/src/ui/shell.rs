@@ -88,6 +88,39 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
                     .grow(1.0)
                     .a11y_hidden(),
             );
+        if page == Page::Library {
+            let soon = sess.stats(crate::app::today()).expiring;
+            if soon > 0 {
+                r = r.child(
+                    el().key("nav-expiring")
+                        .role("button")
+                        .label(format!("{soon} keys with a deadline soon"))
+                        .h(20.0)
+                        .min_w(20.0)
+                        .px(7.0)
+                        .radius(10.0)
+                        .center()
+                        .fill(if active {
+                            k.c.text_contrast.alpha(0.22)
+                        } else {
+                            k.c.warning.icon.alpha(0.18)
+                        })
+                        .cursor(rune::Cursor::Pointer)
+                        .help("Redemption deadlines within 30 days or past. Click to show them.")
+                        .on_press(|s: &mut AppState| s.show_expiring())
+                        .child(
+                            text(format!("{soon} soon"))
+                                .font(k.ty.text_xsmall_medium)
+                                .color(if active {
+                                    k.c.text_contrast
+                                } else {
+                                    k.c.warning.icon
+                                })
+                                .a11y_hidden(),
+                        ),
+                );
+            }
+        }
         if let Some(b) = badge {
             r = r.child(
                 text(b)

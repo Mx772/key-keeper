@@ -2290,3 +2290,40 @@ fn bulk_bar_and_row_menu_open_the_bulk_editor() {
     rt.frame(1.0 / 60.0);
     assert!(rt.state.session().unwrap().bulk.is_none());
 }
+
+// ── at a glance ───────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn stats_count_tradable_keys_value_and_deadlines() {
+    let mut rt = demo_rt();
+    let today = jiff::civil::date(2026, 11, 26);
+    let st = rt.state.session().unwrap().stats(today);
+    assert_eq!(st.total, 18);
+    // Demo deadlines: Dredge 11/20 (past), Celeste 12/2 (reserved, still held), Haiku 12/15,
+    // Tunic 2027-03-01 (far).
+    assert_eq!(st.expired, 1);
+    assert_eq!(st.expiring, 3);
+    let s = rt.state.session().unwrap();
+    let tradable = s
+        .repo
+        .keys()
+        .iter()
+        .filter(|k| k.status.can_trade())
+        .count();
+    assert_eq!(st.tradable, tradable);
+    assert!(st.priced > 0 && st.priced <= tradable);
+    assert_eq!(st.value.as_ref().unwrap().currency, "USD");
+
+    click(&mut rt, "stat-expiring");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.deadline_soon);
+    assert_eq!(s.rows.len(), s.stats(crate::app::today()).expiring);
+    click(&mut rt, "stat-tradable");
+    poll(&mut rt, 0.0);
+    assert_eq!(
+        rt.state.session().unwrap().statuses,
+        vec![KeyStatus::Available]
+    );
+    assert!(rt.find("nav-expiring").is_some(), "sidebar badge");
+}
