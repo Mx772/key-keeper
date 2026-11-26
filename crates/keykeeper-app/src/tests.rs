@@ -2509,3 +2509,54 @@ fn grouping_by_bundle_folds_and_unfolds() {
     poll(&mut rt, 0.0);
     assert_eq!(rt.state.session().unwrap().display.len(), n);
 }
+
+// ── grid ──────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn grid_view_shows_cards_that_open_and_fetches_their_art() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    rt.update(|s, _| s.set_library_view(crate::config::LibraryView::Grid));
+    poll_until(&mut rt, 1.0, |s| {
+        let x = s.session().unwrap();
+        x.rows
+            .iter()
+            .filter_map(|id| x.repo.key(*id).and_then(|k| k.steam_app_id))
+            .all(|a| s.info.art(a).is_some_and(|i| i.is_ready()))
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("library-grid").is_some());
+    assert!(rt.find("library-table").is_none());
+    let with_app = rt
+        .state
+        .session()
+        .unwrap()
+        .rows
+        .iter()
+        .filter(|id| {
+            rt.state
+                .session()
+                .unwrap()
+                .repo
+                .key(**id)
+                .is_some_and(|k| k.steam_app_id.is_some())
+        })
+        .count();
+    assert_eq!(
+        downloads.lock().unwrap().len(),
+        with_app,
+        "one image per game"
+    );
+
+    let id = rt.state.session().unwrap().rows[0];
+    click(&mut rt, &format!("name-{id}"));
+    let s = rt.state.session().unwrap();
+    assert!(s.table.is_selected(&id.to_string()));
+    assert_eq!(s.form.as_ref().and_then(|f| f.target), Some(id));
+    let has_app = s.repo.key(id).unwrap().steam_app_id.is_some();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("form-art").is_some() || !has_app);
+
+    right_click(&mut rt, &format!("name-{id}"));
+    assert!(rt.find("menu-edit").is_some(), "cards have the row menu");
+}

@@ -260,6 +260,30 @@ impl AppState {
         self.info.send(Req::Details(batch), &api, waker.as_ref());
     }
 
+    /// In the grid, artwork for the cards in view (the first few hundred).
+    pub fn want_grid_art(&mut self) {
+        let Some(s) = self.session() else { return };
+        if self.config.library.view != crate::config::LibraryView::Grid
+            || s.page != crate::app::Page::Library
+        {
+            return;
+        }
+        let apps: Vec<u32> = s
+            .rows
+            .iter()
+            .take(400)
+            .filter_map(|id| s.repo.key(*id).and_then(|k| k.steam_app_id))
+            .filter(|a| !self.info.art.contains_key(a))
+            .collect();
+        if apps.is_empty() {
+            return;
+        }
+        self.want_details(&apps);
+        for a in apps {
+            self.want_art(a);
+        }
+    }
+
     /// Load `app_id`'s header art from the cache, or Steam when allowed.
     pub fn want_art(&mut self, app_id: u32) {
         if self.info.art.contains_key(&app_id) || self.info.cache.is_none() {

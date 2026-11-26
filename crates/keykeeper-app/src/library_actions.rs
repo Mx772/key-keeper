@@ -73,6 +73,14 @@ impl AppState {
         }
     }
 
+    /// A grid card was clicked: select it and open it, like a table row.
+    pub fn select_card(&mut self, id: Uuid) {
+        if let Some(s) = self.session_mut() {
+            s.table.select(id.to_string());
+        }
+        self.open_key(id);
+    }
+
     /// Move the selection `delta` rows, opening the key like a click does.
     pub fn move_cursor(&mut self, delta: isize, tx: &mut Tx) {
         let Some(s) = self.session_mut() else { return };

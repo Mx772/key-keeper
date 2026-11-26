@@ -68,6 +68,20 @@ pub fn art(s: &AppState, key: &GameKey, w: f32, h: f32, radius: [f32; 4]) -> El 
     }
 }
 
+/// Like [`art`] but as wide as its parent.
+pub fn art_fill(s: &AppState, key: &GameKey, h: f32, radius: f32) -> El {
+    let image = key.steam_app_id.and_then(|a| s.info.art(a));
+    let base = el().w_full().h(h).radius(radius).clip_rounded(radius);
+    match image {
+        Some(img) => base
+            .fill(Color::BLACK)
+            .pixels_fit(img.pixels(), rune::SurfaceFit::Fill)
+            .role("image")
+            .label(format!("{} artwork", key.game_name)),
+        None => placeholder(&key.game_name, base, h),
+    }
+}
+
 fn placeholder(name: &str, base: El, h: f32) -> El {
     let (a, b) = PLACEHOLDER[(name_hash(name) % PLACEHOLDER.len() as u64) as usize];
     let size = (h * 0.36).clamp(14.0, 56.0);

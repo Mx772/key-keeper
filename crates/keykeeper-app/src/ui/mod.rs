@@ -5,6 +5,7 @@ mod bulk;
 mod card;
 mod cart;
 mod detail;
+mod grid;
 mod import;
 mod library;
 mod lock;

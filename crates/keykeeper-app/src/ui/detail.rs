@@ -54,7 +54,7 @@ fn toggle_select(name: &'static str) -> impl Fn(&mut AppState) + Clone {
 }
 
 pub fn view(
-    _s: &AppState,
+    s: &AppState,
     sess: &Session,
     form: &KeyForm,
     busy: bool,
@@ -283,6 +283,17 @@ pub fn view(
         ));
 
     let mut body = col().w_full().gap(18.0);
+    if let Some(key) = existing.filter(|k| k.steam_app_id.is_some()) {
+        body = body.child(
+            super::card::art_fill(
+                s,
+                key,
+                (356.0 * super::card::HEADER_RATIO).round(),
+                k.radius.lg,
+            )
+            .key("form-art"),
+        );
+    }
     if let Some(r) = existing.and_then(|key| redeem_row(sess, key, k)) {
         body = body.child(r);
     }

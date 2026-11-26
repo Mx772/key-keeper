@@ -730,6 +730,7 @@ impl AppState {
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
         changed |= self.finish_info();
+        self.want_grid_art();
         self.poll_layout(now, tx);
         changed |= self.poll_hover(now, tx);
         changed |= self.poll_updates(now, tx);
@@ -887,6 +888,9 @@ impl AppState {
         {
             s.form = Some(KeyForm::from_key(k, s.date_format()));
             s.bulk = None;
+            if let Some(app) = k.steam_app_id {
+                self.want_info(app);
+            }
         }
     }
 

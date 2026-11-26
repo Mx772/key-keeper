@@ -215,13 +215,12 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     if total == 0 {
         page = page.child(empty_state(k));
     } else {
-        page = page.child(
+        let area = if s.config.library.view == LibraryView::Grid {
+            super::row_menu::wrap(sess, super::grid::view(s, sess, k), k, overlays)
+        } else {
             table(s, sess, k, overlays)
-                .w_full()
-                .min_w(0.0)
-                .grow(1.0)
-                .min_h(0.0),
-        );
+        };
+        page = page.child(area.w_full().min_w(0.0).grow(1.0).min_h(0.0));
     }
     if let Some(id) = s.hover_card_key()
         && let Some(key) = sess.repo.key(id)

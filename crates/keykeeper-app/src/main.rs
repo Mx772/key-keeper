@@ -116,6 +116,14 @@ const SCENES: &[Scene] = &[
             x.view_columns_open = true;
         }
     }),
+    ("grid", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.config.library.view = config::LibraryView::Grid;
+        let id = s.session().and_then(|x| x.rows.get(2).copied());
+        if let Some(id) = id {
+            s.select_card(id);
+        }
+    }),
     ("cart-button", |s| {
         demo::unlock(s, demo::sample_data());
         let ids: Vec<_> = s
