@@ -1453,11 +1453,15 @@ fn unlocking_with_a_newer_app_writes_the_pre_upgrade_backup() {
 fn huge_paste_keeps_preview_reachable() {
     let mut rt = demo_rt();
     click(&mut rt, "nav-import");
-    let mut text = String::from("Name	Key	Bundle
-");
+    let mut text = String::from(
+        "Name	Key	Bundle
+",
+    );
     for i in 0..3000 {
-        text.push_str(&format!("Game {i}	AAAAA-BBBBB-{i:05}	Some Bundle
-"));
+        text.push_str(&format!(
+            "Game {i}	AAAAA-BBBBB-{i:05}	Some Bundle
+"
+        ));
     }
     rt.update(|s, _| s.session_mut().unwrap().import.paste = TextEdit::new(&text));
     rt.frame(1.0);
