@@ -1,6 +1,7 @@
 //! Views. Each page is a function `(&AppState, &Kit, &mut overlays) -> El`; all behaviour goes
 //! through `AppState` methods.
 
+mod cart;
 mod detail;
 mod import;
 mod library;
@@ -14,6 +15,7 @@ use rune_kit::{Kit, TableState};
 
 use crate::app::{AppState, LockUi, Screen, Session};
 use crate::form::KeyForm;
+use crate::trade_actions::TradeForm;
 use keykeeper_core::KeyStatus;
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
@@ -64,6 +66,22 @@ pub fn lock_edit<'a>(
     match screen {
         Screen::Locked(l) => f(l),
         Screen::Unlocked(_) => scratch,
+    }
+}
+
+pub fn trade_edit<'a>(
+    s: &'a mut AppState,
+    f: impl FnOnce(&'a mut TradeForm) -> &'a mut TextEdit,
+) -> &'a mut TextEdit {
+    let AppState {
+        screen, scratch, ..
+    } = s;
+    match screen {
+        Screen::Unlocked(x) => match x.trade_form.as_mut() {
+            Some(t) => f(t),
+            None => scratch,
+        },
+        Screen::Locked(_) => scratch,
     }
 }
 

@@ -10,6 +10,8 @@ pub mod model;
 pub mod query;
 pub mod repo;
 pub mod secret;
+pub mod template;
+pub mod trade;
 pub mod vault;
 
 pub use data::VaultData;
@@ -21,4 +23,6 @@ pub use model::{
 pub use query::{Query, Sort, SortDir, SortField};
 pub use repo::Repo;
 pub use secret::Secret;
+pub use template::Templates;
+pub use trade::{CartAdd, Completed, TradeError};
 pub use vault::{KdfParams, Vault, VaultKeys};

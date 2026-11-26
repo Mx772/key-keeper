@@ -19,6 +19,7 @@ use zeroize::Zeroizing;
 use crate::config::Config;
 use crate::form::KeyForm;
 use crate::theme::ThemeId;
+use crate::trade_actions::{TemplatesUi, TradeForm};
 
 /// Unsaved changes reach disk this long after the last edit.
 pub const AUTOSAVE_DELAY: f64 = 1.5;
@@ -27,16 +28,24 @@ const TOAST_SECS: f64 = 3.5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Library,
+    Cart,
     Trades,
     Import,
     Settings,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Library, Page::Trades, Page::Import, Page::Settings];
+    pub const ALL: [Page; 5] = [
+        Page::Library,
+        Page::Cart,
+        Page::Trades,
+        Page::Import,
+        Page::Settings,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Page::Library => "Library",
+            Page::Cart => "Cart",
             Page::Trades => "Trades",
             Page::Import => "Import",
             Page::Settings => "Settings",
@@ -45,6 +54,7 @@ impl Page {
     pub fn slug(self) -> &'static str {
         match self {
             Page::Library => "library",
+            Page::Cart => "cart",
             Page::Trades => "trades",
             Page::Import => "import",
             Page::Settings => "settings",
@@ -98,6 +108,7 @@ impl LockUi {
 pub enum Confirm {
     DeleteKeys(Vec<Uuid>),
     ExportPlain(ExportKind),
+    CancelTrade(Uuid),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +175,9 @@ pub struct Session {
     // other pages
     pub import: ImportUi,
     pub settings_ui: SettingsUi,
+    pub trade_form: Option<TradeForm>,
+    pub selected_trade: Option<Uuid>,
+    pub templates_ui: TemplatesUi,
     // persistence
     seen_gen: u64,
     dirty_since: Option<f64>,
@@ -173,6 +187,7 @@ pub struct Session {
 impl Session {
     pub fn new(vault: Vault, data: VaultData) -> Session {
         let date_format = data.settings.date_format;
+        let templates = data.templates.clone();
         let repo = Repo::new(data);
         let gen_ = repo.generation();
         Session {
@@ -194,6 +209,9 @@ impl Session {
             bulk_status_open: false,
             import: ImportUi::new(date_format),
             settings_ui: SettingsUi::default(),
+            trade_form: None,
+            selected_trade: None,
+            templates_ui: TemplatesUi::from(&templates),
             seen_gen: gen_,
             dirty_since: None,
             save_error: None,
@@ -523,6 +541,7 @@ impl AppState {
     pub fn lock(&mut self, tx: &mut Tx) {
         let path = match &mut self.screen {
             Screen::Unlocked(s) => {
+                s.sync_trade_form();
                 if s.is_dirty() && s.save().is_err() {
                     let err = s.save_error.clone().unwrap_or_default();
                     self.toast_error("Couldn't save before locking", err);
@@ -561,6 +580,7 @@ impl AppState {
         let mut save_failed = None;
         if let Screen::Unlocked(s) = &mut self.screen {
             changed |= s.refresh_rows(today());
+            changed |= s.refresh_trade_form();
             let gen_ = s.repo.generation();
             if gen_ != s.seen_gen {
                 s.seen_gen = gen_;
@@ -606,10 +626,11 @@ impl AppState {
 
     /// Window closing: flush unsaved changes and clear a copied key.
     pub fn on_close(&mut self, tx: &mut Tx) {
-        if let Screen::Unlocked(s) = &mut self.screen
-            && s.is_dirty()
-        {
-            let _ = s.save();
+        if let Screen::Unlocked(s) = &mut self.screen {
+            s.sync_trade_form();
+            if s.is_dirty() {
+                let _ = s.save();
+            }
         }
         tx.clear_secret_clipboard();
     }
@@ -618,8 +639,10 @@ impl AppState {
 
     pub fn go(&mut self, page: Page) {
         if let Some(s) = self.session_mut() {
+            s.sync_trade_form();
             s.page = page;
             s.bulk_status_open = false;
+            s.refresh_trade_form();
         }
     }
 
@@ -774,6 +797,7 @@ impl AppState {
                 ));
             }
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
+            Confirm::CancelTrade(id) => self.cancel_trade_now(id),
         }
     }
 

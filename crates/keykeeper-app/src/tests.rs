@@ -22,7 +22,14 @@ fn state_for(vault: &Path) -> AppState {
 }
 
 fn runtime(s: AppState) -> Runtime<AppState> {
-    let mut rt = Runtime::new(s, ui::view, SIZE, Env::new(true, 1.0));
+    runtime_sized(s, SIZE)
+}
+
+/// Settings is a long scrolling page; tall tests keep every control on screen.
+const TALL: (f32, f32) = (1280.0, 2400.0);
+
+fn runtime_sized(s: AppState, size: (f32, f32)) -> Runtime<AppState> {
+    let mut rt = Runtime::new(s, ui::view, size, Env::new(true, 1.0));
     // What AppSpec wires in the real app.
     rt.on_key = Some(crate::on_key);
     rt.poll = Some(crate::poll);
@@ -389,7 +396,7 @@ fn change_password() {
     .unwrap();
     s.open_session(v, VaultData::default());
     s.go(Page::Settings);
-    let mut rt = runtime(s);
+    let mut rt = runtime_sized(s, TALL);
     let set = |rt: &mut Runtime<AppState>, old: &str, new: &str, confirm: &str| {
         let (old, new, confirm) = (old.to_string(), new.to_string(), confirm.to_string());
         rt.update(move |s, _| {
@@ -496,4 +503,238 @@ fn every_scene_and_theme_renders() {
             assert!(rt.find("app").is_some(), "scene {name} with {theme:?}");
         }
     }
+}
+
+// ── trade flow ───────────────────────────────────────────────────────────────────────────────
+
+fn available_ids(rt: &Runtime<AppState>, n: usize) -> Vec<uuid::Uuid> {
+    let s = rt.state.session().unwrap();
+    s.rows
+        .iter()
+        .copied()
+        .filter(|id| s.repo.key(*id).unwrap().status == KeyStatus::Available)
+        .take(n)
+        .collect()
+}
+
+#[test]
+fn cart_checkout_send_complete_and_rep() {
+    let mut rt = demo_rt();
+    let ids = available_ids(&rt, 2);
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        for id in &ids {
+            x.table.select(id.to_string());
+        }
+    });
+    // Select both (select() replaces, so add the first back via the API used by the bulk bar).
+    rt.update(|s, _| s.add_to_cart(&ids));
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().repo.cart_len(), 2);
+    assert!(ids.iter().all(
+        |id| rt.state.session().unwrap().repo.key(*id).unwrap().status == KeyStatus::Reserved
+    ));
+
+    click(&mut rt, "nav-cart");
+    poll(&mut rt, 0.0);
+    assert!(rt.find("cart-items").is_some());
+    assert!(rt.find("copy-checkout").is_some());
+    rt.update(|s, _| {
+        let f = s
+            .session_mut()
+            .unwrap()
+            .trade_form
+            .as_mut()
+            .expect("cart form");
+        f.partner = TextEdit::new("lumen");
+        f.trade_url = TextEdit::new("https://lestrades.com/offer/400001/");
+        f.received = TextEdit::new("Animal Well: ANIM4-LWELL-12345\nBalatro");
+    });
+    click(&mut rt, "cart-send");
+    poll(&mut rt, 0.0);
+    let trade_id = {
+        let s = rt.state.session().unwrap();
+        assert_eq!(s.page, Page::Trades);
+        assert!(s.repo.cart().is_none());
+        let t = s.repo.trade(s.selected_trade.unwrap()).unwrap();
+        assert_eq!(t.status, keykeeper_core::TradeStatus::Pending);
+        assert_eq!(t.partner_name, "lumen", "details were saved on send");
+        assert_eq!(t.received.len(), 2);
+        t.id
+    };
+    assert!(rt.find("trade-complete").is_some());
+
+    click(&mut rt, "trade-complete");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    let t = s.repo.trade(trade_id).unwrap();
+    assert_eq!(t.status, keykeeper_core::TradeStatus::Completed);
+    assert!(
+        ids.iter()
+            .all(|id| s.repo.key(*id).unwrap().status == KeyStatus::Traded)
+    );
+    assert!(
+        s.repo.find_by_key("ANIM4-LWELL-12345").is_some(),
+        "received games added by default"
+    );
+    assert!(s.repo.keys().iter().any(|k| k.game_name == "Balatro"));
+    assert!(rt.find("rep-text").is_some());
+    assert!(
+        s.repo
+            .rep_text(t)
+            .unwrap()
+            .contains("https://lestrades.com/offer/400001/")
+    );
+
+    click(&mut rt, "copy-rep");
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.starts_with("Reputation text copied"))
+    );
+    click(&mut rt, "rep-posted");
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .repo
+            .trade(trade_id)
+            .unwrap()
+            .rep_posted
+    );
+}
+
+#[test]
+fn cancel_pending_trade_restores_keys() {
+    let mut rt = demo_rt();
+    let ids = available_ids(&rt, 1);
+    rt.update(|s, _| {
+        s.add_to_cart(&ids);
+        s.go(Page::Cart);
+    });
+    poll(&mut rt, 0.0);
+    click(&mut rt, "cart-send");
+    poll(&mut rt, 0.0);
+    click(&mut rt, "trade-cancel");
+    assert!(rt.find("confirm-actions").is_some());
+    click(&mut rt, "confirm-ok");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.repo.key(ids[0]).unwrap().status, KeyStatus::Available);
+    assert!(
+        s.repo
+            .trades()
+            .iter()
+            .any(|t| t.status == keykeeper_core::TradeStatus::Cancelled)
+    );
+}
+
+#[test]
+fn cart_remove_clear_and_unavailable_keys() {
+    let mut rt = demo_rt();
+    let ids = available_ids(&rt, 3);
+    let traded = rt
+        .state
+        .session()
+        .unwrap()
+        .repo
+        .keys()
+        .iter()
+        .find(|k| k.status == KeyStatus::Traded)
+        .unwrap()
+        .id;
+    let mut all = ids.clone();
+    all.push(traded);
+    rt.update(|s, _| s.add_to_cart(&all));
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title == "Added 3 to cart, skipped 1 unavailable")
+    );
+    rt.update(|s, _| s.go(Page::Cart));
+    poll(&mut rt, 0.0);
+    click(&mut rt, &format!("cart-remove-{}", ids[0]));
+    assert_eq!(rt.state.session().unwrap().repo.cart_len(), 2);
+    click(&mut rt, "cart-clear");
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().repo.cart_len(), 0);
+    assert!(rt.find("cart-empty").is_some());
+}
+
+#[test]
+fn templates_validate_save_and_drive_checkout() {
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime_sized(s, TALL);
+    rt.update(|s, _| s.go(Page::Settings));
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| s.session_mut().unwrap().templates_ui.rep = TextEdit::new("{key} {oops"));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "tpl-save");
+    assert_eq!(
+        rt.state.session().unwrap().repo.data().templates,
+        keykeeper_core::Templates::default(),
+        "invalid templates aren't saved"
+    );
+
+    rt.update(|s, _| {
+        let ui = &mut s.session_mut().unwrap().templates_ui;
+        ui.checkout = TextEdit::new("- {name} | {key}");
+        ui.rep = TextEdit::new("+rep {partner} — {games}");
+    });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "tpl-save");
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.repo.data().templates.checkout_line, "- {name} | {key}");
+
+    let ids = available_ids(&rt, 1);
+    rt.update(|s, _| s.add_to_cart(&ids));
+    let s = rt.state.session().unwrap();
+    let text = s.repo.checkout_text(s.repo.cart().unwrap(), false).unwrap();
+    assert!(text.starts_with("- ") && text.contains(" | "), "{text}");
+
+    rt.update(|s, _| s.reset_templates());
+    assert_eq!(
+        rt.state.session().unwrap().templates_ui.to_templates(),
+        keykeeper_core::Templates::default()
+    );
+}
+
+#[test]
+fn trade_details_survive_navigation_and_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kkvault");
+    let mut s = state_for(&path);
+    let data = demo::sample_data();
+    let v = Vault::create(&path, "pw", KdfParams::INSECURE_FAST_FOR_TESTS, &data).unwrap();
+    s.open_session(v, data);
+    let mut rt = runtime(s);
+    let ids = available_ids(&rt, 1);
+    rt.update(|s, _| {
+        s.add_to_cart(&ids);
+        s.go(Page::Cart);
+    });
+    poll(&mut rt, 0.0);
+    rt.update(|s, _| {
+        s.session_mut()
+            .unwrap()
+            .trade_form
+            .as_mut()
+            .unwrap()
+            .partner = TextEdit::new("nomad")
+    });
+    rt.key(ctrl('l'));
+    rt.frame(1.0 / 60.0);
+    let (_, data) = Vault::open(&path, "pw").unwrap();
+    let cart = data
+        .trades
+        .iter()
+        .find(|t| t.status == keykeeper_core::TradeStatus::Draft)
+        .unwrap();
+    assert_eq!(
+        cart.partner_name, "nomad",
+        "unsaved form text is flushed on lock"
+    );
 }

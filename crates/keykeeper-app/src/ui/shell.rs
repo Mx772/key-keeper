@@ -3,13 +3,14 @@
 use rune::{El, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, Toast};
 
-use super::{detail, import, library, settings, trades};
+use super::{cart, detail, import, library, settings, trades};
 use crate::app::{AppState, Confirm, ExportKind, Page, Session};
 
 pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
     let page = match sess.page {
         Page::Library => library::view(s, sess, k, overlays),
-        Page::Trades => trades::view(sess, k),
+        Page::Cart => cart::view(sess, k, overlays),
+        Page::Trades => trades::view(sess, k, overlays),
         Page::Import => import::view(s, sess, k, overlays),
         Page::Settings => settings::view(s, sess, k, overlays),
     };
@@ -34,7 +35,16 @@ fn sidebar(sess: &Session, k: &Kit) -> El {
         let active = sess.page == page;
         let badge = match page {
             Page::Library => Some(count.to_string()),
-            Page::Trades => Some(sess.repo.trades().len().to_string()).filter(|n| n != "0"),
+            Page::Cart => Some(sess.repo.cart_len().to_string()).filter(|n| n != "0"),
+            Page::Trades => Some(
+                sess.repo
+                    .trades()
+                    .iter()
+                    .filter(|t| t.status == keykeeper_core::TradeStatus::Pending)
+                    .count()
+                    .to_string(),
+            )
+            .filter(|n| n != "0"),
             _ => None,
         };
         let mut r = row()
@@ -177,6 +187,12 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
             "The file will contain every key in the current view in plain text. Anyone who can read the file can redeem them.".to_string(),
             "Export",
             false,
+        ),
+        Confirm::CancelTrade(_) => (
+            "Cancel this trade?".to_string(),
+            "Its keys go back to the status they had before you added them to the cart. You can undo with Ctrl+Z.".to_string(),
+            "Cancel trade",
+            true,
         ),
     };
     let buttons = row()

@@ -176,6 +176,10 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
                 .color(k.c.text_strong),
         )
         .child(spacer())
+        .child(primary(k, "bulk-cart", "Add to cart", true, |s, _| {
+            let ids = s.session().map(Session::selected_ids).unwrap_or_default();
+            s.add_to_cart(&ids);
+        }))
         .child(
             el().key("bulk-copy").child(
                 Button::new("Copy \"Name: Key\"")

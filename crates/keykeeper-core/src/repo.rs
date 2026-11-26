@@ -250,6 +250,63 @@ impl Repo {
         );
     }
 
+    /// Insert-or-replace keys and trades and delete trades, as one undo step. Unchanged
+    /// entries are skipped; returns how many edits were recorded. Keys are stamped
+    /// `updated_at` when they change.
+    pub fn apply_changes(
+        &mut self,
+        label: &str,
+        keys: Vec<GameKey>,
+        trades: Vec<Trade>,
+        delete_trades: &[Uuid],
+    ) -> usize {
+        let now = Timestamp::now();
+        let mut edits = Vec::new();
+        for mut k in keys {
+            let before = self.key(k.id).cloned();
+            if before.as_ref() == Some(&k) {
+                continue;
+            }
+            if before.is_some() {
+                k.updated_at = now;
+            }
+            edits.push(Edit::Key {
+                id: k.id,
+                before: before.map(Box::new),
+                after: Some(Box::new(k)),
+            });
+        }
+        for t in trades {
+            let before = self.trade(t.id).cloned();
+            if before.as_ref() != Some(&t) {
+                edits.push(Edit::Trade {
+                    id: t.id,
+                    before: before.map(Box::new),
+                    after: Some(Box::new(t)),
+                });
+            }
+        }
+        for id in delete_trades {
+            if let Some(before) = self.trade(*id).cloned() {
+                edits.push(Edit::Trade {
+                    id: *id,
+                    before: Some(Box::new(before)),
+                    after: None,
+                });
+            }
+        }
+        let n = edits.len();
+        self.commit(label, edits);
+        n
+    }
+
+    pub fn set_templates(&mut self, templates: crate::template::Templates) {
+        if self.data.templates != templates {
+            self.data.templates = templates;
+            self.generation += 1;
+        }
+    }
+
     pub fn delete_trade(&mut self, id: Uuid) -> Result<(), RepoError> {
         let before = self
             .trade(id)

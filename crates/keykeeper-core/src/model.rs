@@ -316,6 +316,12 @@ pub struct Trade {
     pub rep_posted: bool,
     #[serde(default)]
     pub notes: String,
+    /// When it was marked as sent (Draft → Pending).
+    #[serde(default)]
+    pub sent_at: Option<Timestamp>,
+    /// Each given key's status before it was reserved, restored if the trade is cancelled.
+    #[serde(default)]
+    pub prior_status: Vec<(Uuid, KeyStatus)>,
 }
 
 impl Trade {
@@ -334,6 +340,8 @@ impl Trade {
             completed_at: None,
             rep_posted: false,
             notes: String::new(),
+            sent_at: None,
+            prior_status: Vec::new(),
         }
     }
 }

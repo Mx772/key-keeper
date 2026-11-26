@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           cargo build -p keykeeper-app
-          for scene in lock create library detail new-key import import-start settings trades empty light; do
+          for scene in lock create library detail new-key import import-start cart trades settings empty light; do
             cargo run -q -p keykeeper-app -- --snap "target/snap-$scene.png" --scene "$scene" --size 1280x800 || true
           done
         continue-on-error: true # CI runners may lack a GPU; RUNE falls back to WARP on Windows

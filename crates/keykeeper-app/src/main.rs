@@ -9,6 +9,7 @@ mod config;
 mod demo;
 mod form;
 mod theme;
+mod trade_actions;
 mod ui;
 
 #[cfg(test)]
@@ -67,7 +68,31 @@ const SCENES: &[Scene] = &[
     }),
     ("trades", |s| {
         demo::unlock(s, demo::sample_data());
-        s.go(Page::Trades);
+        if let Some(id) = s
+            .session()
+            .and_then(|x| x.repo.trades().first().map(|t| t.id))
+        {
+            s.select_trade(id);
+        }
+    }),
+    ("cart", |s| {
+        demo::unlock(s, demo::sample_data());
+        let ids: Vec<_> = s
+            .session()
+            .map(|x| x.rows.iter().take(4).copied().collect())
+            .unwrap_or_default();
+        s.add_to_cart(&ids);
+        s.toasts.clear();
+        s.go(Page::Cart);
+        if let Some(f) = s.session_mut().and_then(|x| x.trade_form.as_mut()) {
+            f.partner = rune::TextEdit::new("lumen");
+            f.trade_url = rune::TextEdit::new("https://lestrades.com/offer/100001/");
+            f.received = rune::TextEdit::new("Tunic\nA Short Hike: SH0RT-H1KE2-BBBB2");
+        }
+    }),
+    ("templates", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.go(Page::Settings);
     }),
     ("empty", |s| {
         demo::unlock(s, keykeeper_core::VaultData::default())

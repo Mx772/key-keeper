@@ -321,11 +321,40 @@ pub fn view(sess: &Session, form: &KeyForm, k: &Kit, overlays: &mut Vec<El>) -> 
         }
     }
 
+    let in_cart = existing.is_some_and(|k| {
+        k.trade_id.is_some() && sess.repo.cart().is_some_and(|c| Some(c.id) == k.trade_id)
+    });
+    let cart_button = match existing {
+        Some(key) if key.status.can_trade() => {
+            let id = key.id;
+            Some(
+                el().key("form-cart").child(
+                    Button::new("Add to cart")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(move |s: &mut AppState| s.add_to_cart(&[id]))
+                        .build(k),
+                ),
+            )
+        }
+        Some(key) if in_cart => {
+            let id = key.id;
+            Some(
+                el().key("form-uncart").child(
+                    Button::new("Remove from cart")
+                        .variant(ButtonVariant::GhostMuted)
+                        .on_press(move |s: &mut AppState| s.remove_from_cart(id))
+                        .build(k),
+                ),
+            )
+        }
+        _ => None,
+    };
     let footer = match existing {
         Some(_) => row()
             .key("form-actions")
             .w_full()
             .gap(8.0)
+            .children(cart_button)
             .child(
                 el().key("form-delete").child(
                     Button::new("Delete")

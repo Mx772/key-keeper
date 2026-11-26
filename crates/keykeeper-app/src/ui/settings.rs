@@ -5,8 +5,11 @@ use rune::{El, ScrollSpec, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, Kit, TextInput};
 
 use super::{card, chip, field, hstack, muted, primary, sess_edit, title_style};
-use crate::app::{AppState, ExportKind, Session};
+use crate::app::{AppState, ExportKind, Session, today};
 use crate::theme::ThemeId;
+use crate::trade_actions::sample_var;
+use keykeeper_core::template::{self, TemplateError};
+use rune_kit::TextArea;
 
 fn option_row(k: &Kit, label: &str, control: El) -> El {
     row()
@@ -240,6 +243,50 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             .child(option_row(k, "Change password", pw_form)),
     );
 
+    let tu = &sess.templates_ui;
+    let sample_date = st.date_format.format(today());
+    let preview = |tpl: &str, errs: &[TemplateError], key: &str| -> El {
+        if let Some(e) = errs.first() {
+            return text(e.to_string())
+                .key(key.to_string())
+                .font(k.ty.text_small_medium)
+                .color(k.c.danger.icon);
+        }
+        let out = template::render(tpl, |v| sample_var(v, &sample_date)).unwrap_or_default();
+        super::cart::text_block(k, key, out)
+    };
+    let (ce, re) = (tu.checkout_errors(), tu.rep_errors());
+    let changed = tu.to_templates() != sess.repo.data().templates;
+    let templates = card(
+        k,
+        "settings-templates",
+        "Templates",
+        col()
+            .gap(14.0)
+            .child(muted(k, "Use {variables} — write {{ or }} for a literal brace.").wrap())
+            .child(field(
+                k,
+                "Checkout line (one per key)",
+                TextArea::new(&tu.checkout).rows(2).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.checkout)).build(k).key("tpl-checkout"),
+                None,
+            ))
+            .child(muted(k, "Key: {name} {key} {bundle} {platform} {steam_url} {notes} · Trade: {partner} {partner_url} {trade_url} {site} {date} {count} {games} {received}").wrap())
+            .child(preview(&tu.checkout.text, &ce, "tpl-checkout-preview"))
+            .child(field(
+                k,
+                "Reputation post (steamtrades.com)",
+                TextArea::new(&tu.rep).rows(4).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.rep)).build(k).key("tpl-rep"),
+                None,
+            ))
+            .child(muted(k, "Trade variables only — keys can't appear in a public post.").wrap())
+            .child(preview(&tu.rep.text, &re, "tpl-rep-preview"))
+            .child(
+                hstack()
+                    .child(primary(k, "tpl-save", "Save templates", changed && ce.is_empty() && re.is_empty(), |s, _| s.save_templates()))
+                    .child(el().key("tpl-reset").child(Button::new("Reset to defaults").variant(ButtonVariant::GhostMuted).on_press(|s: &mut AppState| s.reset_templates()).build(k))),
+            ),
+    );
+
     let export = card(
         k,
         "settings-export",
@@ -272,6 +319,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(text("Settings").font(title_style()).color(k.c.text_strong))
                 .child(appearance)
                 .child(data)
+                .child(templates)
                 .child(security)
                 .child(export),
         )

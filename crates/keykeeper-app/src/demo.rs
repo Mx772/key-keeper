@@ -197,6 +197,7 @@ pub fn sample_data() -> VaultData {
     trade.partner_name = "lumen".into();
     trade.trade_url = Some("https://lestrades.com/offer/100001/".into());
     trade.status = TradeStatus::Completed;
+    trade.completed_at = jiff::Timestamp::from_second(1_767_787_200).ok(); // 2026-01-07
     let base =
         jiff::Timestamp::from_second(1_767_225_600).unwrap_or_else(|_| jiff::Timestamp::now()); // 2026-01-01
     for (i, (name, code, bundle, source, status, app, deadline)) in rows.into_iter().enumerate() {

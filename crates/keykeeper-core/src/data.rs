@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 
 use crate::error::VaultError;
 use crate::model::{ApiKeys, GameKey, Settings, Trade};
+use crate::template::Templates;
 
 /// Bump when the payload shape changes incompatibly, and add a step to [`migrate`].
 pub const SCHEMA_VERSION: u32 = 1;
@@ -20,6 +21,8 @@ pub struct VaultData {
     pub settings: Settings,
     #[serde(default)]
     pub api_keys: ApiKeys,
+    #[serde(default)]
+    pub templates: Templates,
 }
 
 impl Default for VaultData {
@@ -30,6 +33,7 @@ impl Default for VaultData {
             trades: Vec::new(),
             settings: Settings::default(),
             api_keys: ApiKeys::default(),
+            templates: Templates::default(),
         }
     }
 }
