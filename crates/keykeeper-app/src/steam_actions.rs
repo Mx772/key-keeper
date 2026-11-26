@@ -32,6 +32,7 @@ pub enum JobDone {
         wishlist: Option<Result<Vec<u32>, SteamError>>,
         owned: Option<Result<Vec<u32>, SteamError>>,
     },
+    Prices(crate::price_actions::PricesDone),
 }
 
 /// The job currently running, for progress display.
@@ -58,6 +59,12 @@ pub struct SteamUi {
     pub api_key: TextEdit,
     /// Last ownership check summary.
     pub status: Option<(bool, String)>,
+    /// Prices: two-letter country and the IsThereAnyDeal / gg.deals API keys.
+    pub country: TextEdit,
+    pub itad_key: TextEdit,
+    pub gg_key: TextEdit,
+    /// Last price fetch summary.
+    pub prices_status: Option<(bool, String)>,
 }
 
 /// Candidates for one key when a search wasn't conclusive.
@@ -81,7 +88,7 @@ impl AppState {
         self.job.is_some()
     }
 
-    fn spawn_job(
+    pub(crate) fn spawn_job(
         &mut self,
         label: &'static str,
         total: usize,
@@ -283,6 +290,10 @@ impl AppState {
     }
 
     fn apply_job(&mut self, done: JobDone) {
+        let done = match done {
+            JobDone::Prices(p) => return self.apply_prices(p),
+            d => d,
+        };
         let Some(s) = self.session_mut() else { return };
         let fmt = s.date_format();
         match done {
@@ -445,6 +456,7 @@ impl AppState {
                 }
                 s.steam_ui.status = Some((true, msg));
             }
+            JobDone::Prices(_) => {}
         }
     }
 }

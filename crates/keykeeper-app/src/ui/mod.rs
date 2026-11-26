@@ -294,3 +294,101 @@ pub fn spacer() -> El {
 pub fn hstack() -> El {
     row().gap(8.0).center_y()
 }
+
+// ── icons and link pills ──────────────────────────────────────────────────────────────────────
+
+pub static EXTERNAL: rune::Icon = rune::Icon {
+    name: "kk-external",
+    view: 16.0,
+    body: r#"<path d="M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M13 3L7.5 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M11 9.5V12.5C11 12.78 10.78 13 10.5 13H3.5C3.22 13 3 12.78 3 12.5V5.5C3 5.22 3.22 5 3.5 5H6.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/>"#,
+};
+
+pub static CART: rune::Icon = rune::Icon {
+    name: "kk-cart",
+    view: 24.0,
+    body: r#"<path d="M3 4H5.2L7.3 14.2C7.4 14.7 7.8 15 8.3 15H17.2C17.7 15 18.1 14.7 18.2 14.2L19.5 8H6.3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9.5" cy="19" r="1.5" fill="currentColor"/><circle cx="16.5" cy="19" r="1.5" fill="currentColor"/>"#,
+};
+
+pub static KEY: rune::Icon = rune::Icon {
+    name: "kk-key",
+    view: 16.0,
+    body: r#"<circle cx="5.5" cy="10.5" r="2.75" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M7.5 8.5L13 3M11 5L12.5 6.5M9.5 6.5L10.75 7.75" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
+};
+
+/// A rounded, clearly clickable pill that opens `url` in the browser.
+pub fn link_pill(k: &Kit, key: impl Into<String>, label: &str, url: String) -> El {
+    let help = url.clone();
+    row()
+        .key(key)
+        .role("link")
+        .label(format!("Open {label}"))
+        .focusable(true)
+        .h(34.0)
+        .px(14.0)
+        .gap(7.0)
+        .radius(17.0)
+        .center_y()
+        .fill(k.c.bg_accent.alpha(0.12))
+        .border(1.0, k.c.bg_accent.alpha(0.45))
+        .hover(k.c.bg_accent.alpha(0.24))
+        .press(k.c.bg_accent.alpha(0.32))
+        .cursor(rune::Cursor::Pointer)
+        .help(help)
+        .on_press_tx(move |_: &mut AppState, tx: &mut rune::Tx| {
+            let _ = tx.open_url(&url);
+        })
+        .child(
+            text(label.to_string())
+                .font(k.ty.ui_medium)
+                .color(k.c.text_accent)
+                .a11y_hidden(),
+        )
+        .child(
+            rune::icon(&EXTERNAL, 14.0)
+                .color(k.c.text_accent)
+                .a11y_hidden(),
+        )
+}
+
+/// Hover text for a game's prices: the best few stores, the all-time low and keyshops.
+pub fn price_help(p: &keykeeper_core::GamePrices) -> Vec<String> {
+    let mut rows: Vec<String> = p
+        .shops
+        .iter()
+        .take(10)
+        .map(|s| {
+            let cut = if s.cut > 0 {
+                format!("  (−{}%)", s.cut)
+            } else {
+                String::new()
+            };
+            format!("{}  {}{cut}", s.shop, s.price.format())
+        })
+        .collect();
+    if p.shops.len() > 10 {
+        rows.push(format!("…and {} more stores", p.shops.len() - 10));
+    }
+    if p.shops.is_empty()
+        && let Some(r) = &p.retail_low
+    {
+        rows.push(format!("Lowest store price  {}", r.format()));
+    }
+    if let Some(l) = &p.history_low {
+        rows.push(format!("All-time low  {}", l.format()));
+    }
+    if let Some(ks) = &p.keyshop_low {
+        rows.push(format!("Keyshops (gg.deals)  {}", ks.format()));
+    }
+    if rows.is_empty() {
+        rows.push("No current prices found".into());
+    }
+    rows
+}
+
+/// Where a click on a game's price goes: the best deal's link, else its gg.deals page.
+pub fn price_url(p: &keykeeper_core::GamePrices) -> Option<String> {
+    p.shops
+        .first()
+        .and_then(|s| s.url.clone())
+        .or_else(|| p.gg_deals_url.clone())
+}

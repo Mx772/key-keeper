@@ -169,6 +169,55 @@ impl Repo {
         n
     }
 
+    /// Mark keys as redeemed on my own account, dated `today`. Keys in the cart leave it (an
+    /// emptied cart is dropped). Keys that are gone or promised in a sent trade are skipped.
+    /// One undo step. Returns the ids that were redeemed.
+    pub fn redeem_keys(&mut self, ids: &[Uuid], today: Date) -> Vec<Uuid> {
+        let mut cart = self.cart().cloned();
+        let cart_id = cart.as_ref().map(|c| c.id);
+        let mut keys = Vec::new();
+        for id in ids {
+            let Some(k) = self.key(*id) else { continue };
+            let in_cart =
+                k.status == KeyStatus::Reserved && k.trade_id.is_some() && k.trade_id == cart_id;
+            if !(k.status.can_trade() || in_cart) || keys.iter().any(|x: &GameKey| x.id == *id) {
+                continue;
+            }
+            let mut k = k.clone();
+            k.status = KeyStatus::Redeemed;
+            k.status_date = Some(today);
+            if in_cart {
+                k.trade_id = None;
+            }
+            keys.push(k);
+        }
+        let redeemed: Vec<Uuid> = keys.iter().map(|k| k.id).collect();
+        if redeemed.is_empty() {
+            return redeemed;
+        }
+        let mut trades = Vec::new();
+        let mut delete = Vec::new();
+        if let Some(c) = cart.as_mut() {
+            let before = c.key_ids.len();
+            c.key_ids.retain(|id| !redeemed.contains(id));
+            c.prior_status.retain(|(id, _)| !redeemed.contains(id));
+            if c.key_ids.len() != before {
+                if c.key_ids.iter().any(|id| self.key(*id).is_some()) {
+                    trades.push(c.clone());
+                } else {
+                    delete.push(c.id);
+                }
+            }
+        }
+        let label = if redeemed.len() == 1 {
+            "Redeem key".to_string()
+        } else {
+            format!("Redeem {} keys", redeemed.len())
+        };
+        self.apply_changes(&label, keys, trades, &delete);
+        redeemed
+    }
+
     /// Save edited details (partner, links, received, notes) of a trade.
     pub fn update_trade_details(&mut self, trade: Trade) -> Result<(), TradeError> {
         let current = self.trade(trade.id).ok_or(TradeError::NotFound)?;
@@ -435,6 +484,34 @@ mod tests {
         assert!(r.cart().is_none());
         assert_eq!(status(&r, ids[0]), KeyStatus::Available);
         assert!(r.key(ids[0]).unwrap().trade_id.is_none());
+    }
+
+    #[test]
+    fn redeem_keys_dates_them_and_leaves_the_cart() {
+        let (mut r, ids) = repo();
+        let today = date(2026, 11, 26);
+        r.add_to_cart(&ids[..2]);
+        let done = r.redeem_keys(&[ids[0], ids[2], ids[3]], today);
+        assert_eq!(done, vec![ids[0], ids[2]], "the traded key is skipped");
+        let k = r.key(ids[0]).unwrap();
+        assert_eq!(
+            (k.status, k.status_date, k.trade_id),
+            (KeyStatus::Redeemed, Some(today), None)
+        );
+        assert_eq!(r.cart_len(), 1, "the other cart key stays");
+        assert_eq!(r.undo_label(), Some("Redeem 2 keys"));
+
+        // Redeeming the rest of the cart drops it.
+        assert_eq!(r.redeem_keys(&[ids[1]], today), vec![ids[1]]);
+        assert!(r.cart().is_none());
+        r.undo();
+        assert_eq!(status(&r, ids[1]), KeyStatus::Reserved);
+        assert_eq!(r.cart_len(), 1);
+
+        // A key promised in a sent trade can't be self-redeemed.
+        let cart = r.cart().unwrap().id;
+        r.send_trade(cart).unwrap();
+        assert!(r.redeem_keys(&[ids[1]], today).is_empty());
     }
 
     #[test]

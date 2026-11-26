@@ -232,6 +232,12 @@ impl GameKey {
             .clone()
             .or_else(|| self.steam_app_id.map(links::itad))
     }
+
+    /// Steam's "Activate a Product" page with this key filled in (Steam keys only).
+    pub fn steam_register_url(&self) -> Option<String> {
+        (self.platform == Platform::Steam && !self.key.expose().trim().is_empty())
+            .then(|| links::steam_register(self.key.expose()))
+    }
 }
 
 // ── Trades ────────────────────────────────────────────────────────────────────────────────────
@@ -378,6 +384,8 @@ pub struct Settings {
     /// Encrypted backups kept next to the vault.
     pub backups_to_keep: u32,
     pub steam_id: Option<String>,
+    /// Two-letter country for store prices (IsThereAnyDeal / gg.deals), e.g. "US".
+    pub price_country: String,
 }
 
 impl Default for Settings {
@@ -389,6 +397,7 @@ impl Default for Settings {
             clipboard_clear_secs: 30,
             backups_to_keep: 5,
             steam_id: None,
+            price_country: "US".to_string(),
         }
     }
 }
@@ -399,6 +408,7 @@ impl Default for Settings {
 pub struct ApiKeys {
     pub steam: Option<Secret>,
     pub itad: Option<Secret>,
+    pub gg_deals: Option<Secret>,
 }
 
 #[cfg(test)]

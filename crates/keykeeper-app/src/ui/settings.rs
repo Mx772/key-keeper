@@ -353,6 +353,85 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
     }
     let steam = card(k, "settings-steam", "Steam", steam_body);
 
+    let mut prices_body = col()
+        .gap(14.0)
+        .child(
+            muted(
+                k,
+                "Shows each game's cheapest current store price in the library's Deals column (hover for every store). Use either service or both; keys are stored encrypted in your vault. gg.deals allows 100 games a minute and 1,000 an hour, so a large library fetches in batches a minute apart.",
+            )
+            .wrap(),
+        )
+        .child(field(
+            k,
+            "Country (two letters, sets currency and region)",
+            TextInput::new(&su.country)
+                .placeholder("US")
+                .width(Some(120.0))
+                .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.steam_ui.country))
+                .build(k)
+                .key("prices-country"),
+            None,
+        ))
+        .child(field(
+            k,
+            "IsThereAnyDeal API key (every store's price and the all-time low)",
+            TextInput::new(&su.itad_key)
+                .placeholder("Your IsThereAnyDeal API key")
+                .secure()
+                .width(Some(420.0))
+                .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.steam_ui.itad_key))
+                .build(k)
+                .key("prices-itad-key"),
+            None,
+        ))
+        .child(field(
+            k,
+            "gg.deals API key (cheapest store and keyshop price)",
+            TextInput::new(&su.gg_key)
+                .placeholder("Your gg.deals API key")
+                .secure()
+                .width(Some(420.0))
+                .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.steam_ui.gg_key))
+                .build(k)
+                .key("prices-gg-key"),
+            None,
+        ))
+        .child(
+            hstack()
+                .child(primary(k, "prices-fetch", "Fetch prices now", !busy, |s, _| {
+                    s.refresh_prices(true)
+                }))
+                .child(
+                    el().key("prices-save").child(
+                        Button::new("Save")
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|s: &mut AppState| {
+                                if let Some(e) = s.save_price_settings()
+                                    && let Some(x) = s.session_mut()
+                                {
+                                    x.steam_ui.prices_status = Some((false, e));
+                                }
+                            })
+                            .build(k),
+                    ),
+                ),
+        );
+    if let Some((ok, m)) = &su.prices_status {
+        prices_body = prices_body.child(
+            text(m.clone())
+                .key("prices-status")
+                .font(k.ty.text_small_medium)
+                .color(if *ok {
+                    k.c.success.icon
+                } else {
+                    k.c.danger.icon
+                })
+                .wrap(),
+        );
+    }
+    let prices = card(k, "settings-prices", "Prices", prices_body);
+
     let export = card(
         k,
         "settings-export",
@@ -387,6 +466,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(data)
                 .child(templates)
                 .child(steam)
+                .child(prices)
                 .child(security)
                 .child(export)
                 .child(super::update::settings_card(s, k)),

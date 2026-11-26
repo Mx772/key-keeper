@@ -65,6 +65,16 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
             ),
         )
         .child(
+            el().key("prices-refresh").child(
+                Button::new("Refresh prices")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(s.steam_busy())
+                    .help("Current store prices from IsThereAnyDeal / gg.deals (keys in Settings → Prices)")
+                    .on_press(|s: &mut AppState| s.refresh_prices(true))
+                    .build(k),
+            ),
+        )
+        .child(
             Button::new("Import")
                 .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut AppState| s.go(Page::Import))
@@ -284,6 +294,100 @@ fn empty_state(k: &Kit) -> El {
         )
 }
 
+/// The game name as a link to its Steam page. Only the text is the link, so a press on the rest
+/// of the cell still selects the row.
+fn name_link(k: &Kit, key: &GameKey, url: String) -> El {
+    row()
+        .key(format!("name-link-{}", key.id))
+        .role("link")
+        .label(format!("{} on Steam", key.game_name))
+        .min_w(0.0)
+        .max_w(10_000.0)
+        .h(22.0)
+        .pr(4.0)
+        .gap(5.0)
+        .radius(5.0)
+        .center_y()
+        .hover(k.c.bg_accent.alpha(0.16))
+        .cursor(rune::Cursor::Pointer)
+        .help("Open on Steam")
+        .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+            let _ = tx.open_url(&url);
+        })
+        .child(
+            text(key.game_name.clone())
+                .font(k.ty.ui)
+                .color(k.c.text_strong)
+                .truncate()
+                .min_w(0.0)
+                .a11y_hidden(),
+        )
+        .child(
+            rune::icon(&super::EXTERNAL, 12.0)
+                .color(k.c.text_accent)
+                .a11y_hidden(),
+        )
+}
+
+/// Best current price and its store; hover lists every store, press opens the best deal.
+fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
+    let Some((best, shop)) = p.best() else {
+        return text("—")
+            .font(k.ty.text_small)
+            .color(k.c.text_faint)
+            .help("No current prices found");
+    };
+    let at_low = p
+        .history_low
+        .as_ref()
+        .is_some_and(|l| best.cents <= l.cents);
+    let rows = super::price_help(p);
+    let mut e = row()
+        .key(format!("deal-{id}"))
+        .min_w(0.0)
+        .h(22.0)
+        .px(4.0)
+        .gap(6.0)
+        .radius(5.0)
+        .center_y()
+        .child(
+            text(best.format())
+                .font(k.ty.mono)
+                .color(if at_low {
+                    k.c.success.icon
+                } else {
+                    k.c.text_strong
+                })
+                .a11y_hidden(),
+        )
+        .child(
+            text(shop.unwrap_or("best store").to_string())
+                .font(k.ty.text_small)
+                .color(k.c.text_muted)
+                .truncate()
+                .min_w(0.0)
+                .a11y_hidden(),
+        );
+    let mut rows = rows.into_iter();
+    if let Some(first) = rows.next() {
+        e = e.help(first);
+    }
+    for r in rows {
+        e = e.help_row(r);
+    }
+    e = e.label(format!("Best price {}", best.format()));
+    if let Some(url) = super::price_url(p) {
+        e = e
+            .role("link")
+            .hover(k.c.bg_accent.alpha(0.16))
+            .cursor(rune::Cursor::Pointer)
+            .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+                let _ = tx.open_url(&url);
+            });
+    }
+    e
+}
+
 fn parse_id(id: &str) -> Option<Uuid> {
     Uuid::parse_str(id).ok()
 }
@@ -336,6 +440,7 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
             .align(Align::End)
             .sortable(),
     )
+    .column(TableColumn::new("deals", "Deals").width(150.0).sortable())
     .column(TableColumn::new("steam", "Steam").width(90.0))
     .column(
         TableColumn::new("added", "Added")
@@ -348,7 +453,14 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
             return Cell::text("");
         };
         match col {
-            "name" => Cell::text(&key.game_name),
+            "name" => match key.steam_url() {
+                Some(url) => Cell::el(name_link(&kc, key, url)),
+                None => Cell::text(&key.game_name),
+            },
+            "deals" => match s.session().and_then(|x| x.repo.key_prices(key)) {
+                Some(p) => Cell::el(deal_cell(&kc, key.id, p)),
+                None => Cell::text(""),
+            },
             "bundle" => Cell::text(key.bundle.as_deref().unwrap_or("")).muted(),
             "key" => Cell::text(key.key.masked()).mono(),
             "platform" => Cell::text(key.platform.label()).muted(),

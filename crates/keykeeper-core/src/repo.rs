@@ -90,6 +90,15 @@ impl Repo {
         &self.data.api_keys
     }
 
+    pub fn prices(&self, app_id: u32) -> Option<&crate::prices::GamePrices> {
+        self.data.prices.get(&app_id)
+    }
+
+    /// Prices for a key's game, if it has a Steam app id and they were fetched.
+    pub fn key_prices(&self, k: &GameKey) -> Option<&crate::prices::GamePrices> {
+        k.steam_app_id.and_then(|a| self.prices(a))
+    }
+
     /// The existing key with the same code, ignoring case, spaces and dashes.
     pub fn find_by_key(&self, code: &str) -> Option<&GameKey> {
         let n = normalize_key(code);
@@ -328,6 +337,23 @@ impl Repo {
     pub fn set_settings(&mut self, settings: Settings) {
         if self.data.settings != settings {
             self.data.settings = settings;
+            self.generation += 1;
+        }
+    }
+
+    /// Merge fetched prices into the cache (not undoable: it's fetched data, not an edit).
+    pub fn set_prices(
+        &mut self,
+        prices: impl IntoIterator<Item = (u32, crate::prices::GamePrices)>,
+    ) {
+        let mut changed = false;
+        for (app, p) in prices {
+            if self.data.prices.get(&app) != Some(&p) {
+                self.data.prices.insert(app, p);
+                changed = true;
+            }
+        }
+        if changed {
             self.generation += 1;
         }
     }

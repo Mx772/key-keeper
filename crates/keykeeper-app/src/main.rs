@@ -14,6 +14,7 @@ mod app;
 mod config;
 mod demo;
 mod form;
+mod price_actions;
 mod selftest;
 mod steam_actions;
 mod theme;
@@ -55,9 +56,25 @@ const SCENES: &[Scene] = &[
     ("library", |s| demo::unlock(s, demo::sample_data())),
     ("detail", |s| {
         demo::unlock(s, demo::sample_data());
-        if let Some(id) = s.session().and_then(|x| x.rows.get(1).copied()) {
+        let id = s.session().and_then(|x| {
+            x.rows.iter().copied().find(|id| {
+                x.repo.key(*id).is_some_and(|k| {
+                    k.status == keykeeper_core::KeyStatus::Available && k.steam_app_id.is_some()
+                })
+            })
+        });
+        if let Some(id) = id {
             s.open_key(id);
         }
+    }),
+    ("cart-button", |s| {
+        demo::unlock(s, demo::sample_data());
+        let ids: Vec<_> = s
+            .session()
+            .map(|x| x.rows.iter().take(3).copied().collect())
+            .unwrap_or_default();
+        s.add_to_cart(&ids);
+        s.toasts.clear();
     }),
     ("new-key", |s| {
         demo::unlock(s, demo::sample_data());

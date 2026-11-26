@@ -8,13 +8,17 @@
 //! - Wishlist: `IWishlistService/GetWishlist/v1` (no key; public wishlists only).
 //! - Owned games: `IPlayerService/GetOwnedGames/v1` (**needs a Web API key**, public profile).
 //!
+//! Store prices (IsThereAnyDeal, gg.deals) are in [`deals`].
+//!
 //! All network access goes through the [`Http`] trait so tests use recorded fixtures.
 
 pub mod api;
+pub mod deals;
 pub mod http;
 pub mod matching;
 
 pub use api::{AppMatch, ProfileRef, Review, Steam, SteamApi, parse_profile_input};
+pub use deals::{GgBatch, GgPrices, ItadPrices, Price, ShopDeal};
 pub use http::{Http, UreqHttp};
 pub use matching::{MatchOutcome, best_match, normalize_title};
 
@@ -32,6 +36,14 @@ pub enum SteamError {
     ProfileNotFound(String),
     #[error("the Steam Web API key was rejected")]
     BadApiKey,
+    #[error("the {0} API key was rejected")]
+    BadServiceKey(&'static str),
+    #[error("{name} returned HTTP {status}")]
+    Service { name: &'static str, status: u16 },
+    #[error("{name}: {message}")]
+    Rejected { name: &'static str, message: String },
+    #[error("{0} isn't available here")]
+    Unsupported(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, SteamError>;

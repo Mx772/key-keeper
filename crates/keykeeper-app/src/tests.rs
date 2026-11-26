@@ -29,7 +29,7 @@ fn runtime(s: AppState) -> Runtime<AppState> {
 }
 
 /// Settings is a long scrolling page; tall tests keep every control on screen.
-const TALL: (f32, f32) = (1280.0, 2400.0);
+const TALL: (f32, f32) = (1280.0, 3000.0);
 
 fn runtime_sized(s: AppState, size: (f32, f32)) -> Runtime<AppState> {
     let mut rt = Runtime::new(s, ui::view, size, Env::new(true, 1.0));
@@ -1487,4 +1487,326 @@ fn steam_api_key_hint_links_to_the_key_page() {
         rt.take_url_requests(),
         ["https://steamcommunity.com/dev/apikey"]
     );
+}
+
+// ── self-redeem, cart button, links and prices ──────────────────────────────────────────────
+
+fn available_steam_ids(rt: &Runtime<AppState>, n: usize) -> Vec<uuid::Uuid> {
+    let s = rt.state.session().unwrap();
+    s.rows
+        .iter()
+        .copied()
+        .filter(|id| {
+            let k = s.repo.key(*id).unwrap();
+            k.status == KeyStatus::Available && k.platform == keykeeper_core::Platform::Steam
+        })
+        .take(n)
+        .collect()
+}
+
+#[test]
+fn non_steam_keys_are_marked_redeemed_without_opening_steam() {
+    let mut rt = demo_rt();
+    let id = {
+        let s = rt.state.session().unwrap();
+        s.repo
+            .keys()
+            .iter()
+            .find(|k| k.status.can_trade() && k.platform != keykeeper_core::Platform::Steam)
+            .expect("demo data has a non-Steam key")
+            .id
+    };
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    rt.take_url_requests();
+    click(&mut rt, "form-redeem");
+    assert!(rt.take_url_requests().is_empty());
+    let k = rt.state.session().unwrap().repo.key(id).unwrap();
+    assert_eq!(k.status, KeyStatus::Redeemed);
+}
+
+#[test]
+fn redeem_on_steam_opens_activation_and_dates_the_key() {
+    let mut rt = demo_rt();
+    let id = available_steam_ids(&rt, 1)[0];
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    rt.take_url_requests();
+    click(&mut rt, "form-redeem");
+    rt.frame(1.0 / 60.0);
+    let code = rt
+        .state
+        .session()
+        .unwrap()
+        .repo
+        .key(id)
+        .unwrap()
+        .key
+        .expose()
+        .to_string();
+    assert_eq!(
+        rt.take_url_requests(),
+        [format!(
+            "https://store.steampowered.com/account/registerkey?key={code}"
+        )]
+    );
+    let k = rt.state.session().unwrap().repo.key(id).unwrap();
+    assert_eq!(k.status, KeyStatus::Redeemed);
+    assert_eq!(k.status_date, Some(crate::app::today()));
+    assert!(
+        rt.find("form-redeem").is_none(),
+        "a redeemed key can't be redeemed again"
+    );
+}
+
+#[test]
+fn cart_bauble_appears_springs_and_goes_to_the_cart() {
+    let mut rt = demo_rt();
+    let ids = available_ids(&rt, 1);
+    rt.update(|s, _| s.add_to_cart(&ids));
+    poll(&mut rt, 2.0);
+    assert!(rt.find("cart-bauble").is_some());
+    assert!(rt.state.cart_bumping());
+    poll(&mut rt, 2.5);
+    assert!(!rt.state.cart_bumping(), "the bump settles");
+    click(&mut rt, "cart-bauble");
+    assert_eq!(rt.state.session().unwrap().page, Page::Cart);
+    assert!(
+        rt.find("cart-bauble").is_none(),
+        "hidden on the Cart page itself"
+    );
+}
+
+#[test]
+fn self_checkout_redeems_the_whole_cart() {
+    let mut rt = demo_rt();
+    let ids = available_ids(&rt, 2);
+    rt.update(|s, _| s.add_to_cart(&ids));
+    click(&mut rt, "nav-cart");
+    poll(&mut rt, 0.0);
+    let cart: Vec<uuid::Uuid> = rt
+        .state
+        .session()
+        .unwrap()
+        .repo
+        .cart()
+        .unwrap()
+        .key_ids
+        .clone();
+    click(&mut rt, "cart-self-checkout");
+    assert_eq!(
+        rt.state.session().unwrap().confirm,
+        Some(Confirm::RedeemCart)
+    );
+    click(&mut rt, "confirm-ok");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.repo.cart().is_none());
+    for id in cart {
+        let k = s.repo.key(id).unwrap();
+        assert_eq!(
+            (k.status, k.status_date),
+            (KeyStatus::Redeemed, Some(crate::app::today()))
+        );
+    }
+    assert!(rt.find("cart-empty").is_some());
+}
+
+#[test]
+fn cart_row_redeem_takes_one_key_out() {
+    let mut rt = demo_rt();
+    let ids = available_steam_ids(&rt, 2);
+    rt.update(|s, _| s.add_to_cart(&ids));
+    click(&mut rt, "nav-cart");
+    poll(&mut rt, 0.0);
+    let before = rt.state.session().unwrap().repo.cart_len();
+    rt.take_url_requests();
+    click(&mut rt, &format!("cart-redeem-{}", ids[0]));
+    assert_eq!(
+        rt.take_url_requests().len(),
+        1,
+        "Steam activation page opened"
+    );
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.repo.cart_len(), before - 1);
+    assert_eq!(s.repo.key(ids[0]).unwrap().status, KeyStatus::Redeemed);
+}
+
+#[test]
+fn game_names_with_a_steam_id_link_to_the_store() {
+    let mut rt = demo_rt();
+    let key = {
+        let s = rt.state.session().unwrap();
+        s.rows
+            .iter()
+            .filter_map(|id| s.repo.key(*id))
+            .find(|k| k.steam_app_id.is_some())
+            .unwrap()
+            .clone()
+    };
+    rt.take_url_requests();
+    click(&mut rt, &format!("name-link-{}", key.id));
+    assert_eq!(rt.take_url_requests(), [key.steam_url().unwrap()]);
+}
+
+#[test]
+fn detail_links_are_pills() {
+    let dir = std::env::temp_dir();
+    let mut s = state_for(&dir.join("unused.kkvault"));
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime_sized(s, TALL);
+    let id = {
+        let s = rt.state.session().unwrap();
+        s.repo
+            .keys()
+            .iter()
+            .find(|k| k.steam_app_id.is_some())
+            .unwrap()
+            .id
+    };
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    rt.take_url_requests();
+    click(&mut rt, "link-gg-deals");
+    let url = rt
+        .state
+        .session()
+        .unwrap()
+        .repo
+        .key(id)
+        .unwrap()
+        .gg_deals_url()
+        .unwrap();
+    assert_eq!(rt.take_url_requests(), [url]);
+    assert!(rt.find("link-steam").is_some() && rt.find("link-itad").is_some());
+}
+
+/// FakeSteam plus canned prices.
+struct PricedSteam;
+
+impl SteamApi for PricedSteam {
+    fn search(&self, t: &str) -> Result<Vec<AppMatch>, SteamError> {
+        FakeSteam.search(t)
+    }
+    fn reviews(&self, a: &[u32]) -> Result<Vec<Review>, SteamError> {
+        FakeSteam.reviews(a)
+    }
+    fn resolve_profile(&self, i: &str) -> Result<u64, SteamError> {
+        FakeSteam.resolve_profile(i)
+    }
+    fn wishlist(&self, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.wishlist(id)
+    }
+    fn owned_games(&self, k: &str, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.owned_games(k, id)
+    }
+    fn itad_prices(
+        &self,
+        key: &str,
+        country: &str,
+        apps: &[u32],
+    ) -> Result<Vec<keykeeper_steam::ItadPrices>, SteamError> {
+        assert_eq!((key, country), ("itad-key", "GB"));
+        let p = |c: u64| keykeeper_steam::Price {
+            cents: c,
+            currency: "GBP".into(),
+        };
+        Ok(apps
+            .iter()
+            .map(|&app_id| keykeeper_steam::ItadPrices {
+                app_id,
+                deals: vec![
+                    keykeeper_steam::ShopDeal {
+                        shop: "Steam".into(),
+                        price: p(1999),
+                        regular: Some(p(1999)),
+                        cut: 0,
+                        url: Some("https://itad.example/steam".into()),
+                    },
+                    keykeeper_steam::ShopDeal {
+                        shop: "Fanatical".into(),
+                        price: p(899),
+                        regular: Some(p(1999)),
+                        cut: 55,
+                        url: Some("https://itad.example/fanatical".into()),
+                    },
+                ],
+                history_low: Some(p(499)),
+            })
+            .collect())
+    }
+    fn gg_deals_prices(
+        &self,
+        _: &str,
+        region: &str,
+        _: &[u32],
+    ) -> Result<keykeeper_steam::GgBatch, SteamError> {
+        assert_eq!(region, "gb");
+        Err(SteamError::BadServiceKey("gg.deals"))
+    }
+}
+
+#[test]
+fn prices_fetch_fill_the_deals_column_and_editor() {
+    let dir = std::env::temp_dir();
+    let mut s = state_for(&dir.join("unused.kkvault"));
+    s.steam = std::sync::Arc::new(PricedSteam);
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime(s);
+
+    // No keys yet: explain where to add one.
+    rt.update(|s, _| s.refresh_prices(true));
+    assert!(rt.state.job.is_none());
+    assert!(matches!(
+        &rt.state.session().unwrap().steam_ui.prices_status,
+        Some((false, m)) if m.contains("Settings")
+    ));
+
+    rt.update(|s, _| {
+        let ui = &mut s.session_mut().unwrap().steam_ui;
+        ui.country = TextEdit::new("gb");
+        ui.itad_key = TextEdit::new("itad-key");
+        ui.gg_key = TextEdit::new("bad-gg");
+    });
+    click(&mut rt, "prices-refresh");
+    wait_for_steam(&mut rt);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.settings().price_country, "GB");
+    assert_eq!(
+        s.repo.api_keys().itad.as_ref().unwrap().expose(),
+        "itad-key"
+    );
+    let key = s
+        .rows
+        .iter()
+        .filter_map(|id| s.repo.key(*id))
+        .find(|k| k.steam_app_id.is_some())
+        .unwrap()
+        .clone();
+    let p = s.repo.key_prices(&key).unwrap();
+    assert_eq!(p.best().unwrap().1, Some("Fanatical"), "cheapest first");
+    assert_eq!(p.best_cents(), Some(899));
+    assert!(
+        matches!(
+            &s.steam_ui.prices_status,
+            Some((false, m)) if m.contains("gg.deals") && m.contains("rejected")
+        ),
+        "one failed service is reported, the other still applies"
+    );
+
+    rt.frame(1.0 / 60.0);
+    rt.take_url_requests();
+    click(&mut rt, &format!("deal-{}", key.id));
+    assert_eq!(rt.take_url_requests(), ["https://itad.example/fanatical"]);
+
+    rt.update(|s, _| s.open_key(key.id));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("form-prices").is_some());
+
+    // Sorting by price puts priced games first.
+    rt.update(|s, _| s.sort_by("deals", rune_kit::SortDir::Ascending));
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    let first = s.repo.key(s.rows[0]).unwrap();
+    assert!(s.repo.key_prices(first).is_some());
 }

@@ -275,27 +275,27 @@ pub fn view(sess: &Session, form: &KeyForm, busy: bool, k: &Kit, overlays: &mut 
             None,
         ));
 
-    let mut body = col().w_full().gap(18.0).child(fields);
+    let mut body = col().w_full().gap(18.0);
+    if let Some(r) = existing.and_then(|key| redeem_row(sess, key, k)) {
+        body = body.child(r);
+    }
+    body = body.child(fields);
     if let Some(key) = existing {
-        let mut links = row().gap(6.0).center_y();
+        let mut links = row().w_full().gap(8.0).flex_wrap().center_y();
         let mut any = false;
-        for (label, url) in [
-            ("Steam", key.steam_url()),
-            ("gg.deals", key.gg_deals_url()),
-            ("IsThereAnyDeal", key.itad_url()),
-            ("Key page", key.key_url.clone()),
+        for (slug, label, url) in [
+            ("steam", "Steam", key.steam_url()),
+            ("gg-deals", "gg.deals", key.gg_deals_url()),
+            ("itad", "IsThereAnyDeal", key.itad_url()),
+            ("key-page", "Key page", key.key_url.clone()),
         ] {
             if let Some(url) = url {
                 any = true;
-                links = links.child(
-                    Button::new(label)
-                        .variant(ButtonVariant::Outline)
-                        .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
-                            let _ = tx.open_url(&url);
-                        })
-                        .build(k),
-                );
+                links = links.child(super::link_pill(k, format!("link-{slug}"), label, url));
             }
+        }
+        if let Some(p) = sess.repo.key_prices(key) {
+            body = body.child(prices_box(p, k));
         }
         if any {
             body = body.child(field(k, "Links", links, None));
@@ -432,6 +432,128 @@ pub fn view(sess: &Session, form: &KeyForm, busy: bool, k: &Kit, overlays: &mut 
                 .border(1.0, k.c.border_weak)
                 .child(footer),
         )
+}
+
+/// "Redeem on Steam" (opens the activation page with the key filled in) or, for other platforms,
+/// "Mark redeemed by me". Both date the key today. Only for keys still in hand or in the cart.
+fn redeem_row(sess: &Session, key: &keykeeper_core::GameKey, k: &Kit) -> Option<El> {
+    let in_cart = key.status == KeyStatus::Reserved
+        && key.trade_id.is_some()
+        && sess.repo.cart().map(|c| c.id) == key.trade_id;
+    if !(key.status.can_trade() || in_cart) {
+        return None;
+    }
+    let id = key.id;
+    let steam = key.steam_register_url().is_some();
+    let (label, hint) = if steam {
+        (
+            "Redeem on Steam",
+            "Opens Steam's activation page with this key filled in and marks it redeemed today.",
+        )
+    } else {
+        (
+            "Mark redeemed by me",
+            "Marks this key redeemed on your account, dated today.",
+        )
+    };
+    let button = el()
+        .key("form-redeem")
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .h(36.0)
+        .px(16.0)
+        .gap(8.0)
+        .radius(k.radius.md)
+        .center_y()
+        .fill(k.c.success.bg)
+        .border(1.0, k.c.success.icon.alpha(0.5))
+        .hover(k.c.success.bg.mix(k.c.success.icon, 0.18))
+        .cursor(rune::Cursor::Pointer)
+        .on_press_tx(move |s: &mut AppState, tx: &mut Tx| s.redeem_self(&[id], true, tx))
+        .child(
+            rune::icon(&super::KEY, 15.0)
+                .color(k.c.success.fg)
+                .a11y_hidden(),
+        )
+        .child(
+            text(label)
+                .font(k.ty.ui_medium)
+                .color(k.c.success.fg)
+                .a11y_hidden(),
+        );
+    Some(
+        col()
+            .key("form-redeem-row")
+            .w_full()
+            .gap(6.0)
+            .child(row().child(button))
+            .child(muted(k, hint).wrap()),
+    )
+}
+
+/// The current store prices for this key's game, cheapest first; each row opens that deal.
+fn prices_box(p: &keykeeper_core::GamePrices, k: &Kit) -> El {
+    let mut list = col().key("form-prices").w_full().gap(2.0);
+    for (i, shop) in p.shops.iter().take(8).enumerate() {
+        let mut r = row()
+            .key(format!("price-{i}"))
+            .w_full()
+            .h(28.0)
+            .px(10.0)
+            .gap(8.0)
+            .radius(k.radius.sm)
+            .center_y()
+            .fill(if i == 0 { k.c.success.bg } else { k.c.page })
+            .child(
+                text(shop.shop.clone())
+                    .font(k.ty.ui)
+                    .color(k.c.text_base)
+                    .grow(1.0)
+                    .truncate(),
+            );
+        if shop.cut > 0 {
+            r = r.child(muted(k, format!("−{}%", shop.cut)));
+        }
+        r = r.child(
+            text(shop.price.format())
+                .font(k.ty.mono)
+                .color(k.c.text_strong),
+        );
+        if let Some(url) = shop.url.clone() {
+            r = r
+                .role("link")
+                .hover(k.c.surface_hover)
+                .cursor(rune::Cursor::Pointer)
+                .help(format!("Open {} deal", shop.shop))
+                .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+                    let _ = tx.open_url(&url);
+                });
+        }
+        list = list.child(r);
+    }
+    if p.shops.len() > 8 {
+        list = list.child(muted(k, format!("…and {} more stores", p.shops.len() - 8)));
+    }
+    let mut extra = Vec::new();
+    if p.shops.is_empty()
+        && let Some(r) = &p.retail_low
+    {
+        extra.push(format!("Lowest store price {}", r.format()));
+    }
+    if let Some(l) = &p.history_low {
+        extra.push(format!("All-time low {}", l.format()));
+    }
+    if let Some(ks) = &p.keyshop_low {
+        extra.push(format!("Keyshops {}", ks.format()));
+    }
+    if p.shops.is_empty() && extra.is_empty() {
+        extra.push("No current prices found".into());
+    }
+    if !extra.is_empty() {
+        list = list.child(muted(k, extra.join(" · ")).wrap());
+    }
+    field(k, &format!("Prices ({})", p.country), list, None)
 }
 
 fn steam_row(sess: &Session, form: &KeyForm, busy: bool, k: &Kit) -> El {

@@ -236,6 +236,7 @@ pub fn sample_data() -> VaultData {
                 ownership,
                 fetched_at: base,
             });
+            data.prices.insert(app, demo_prices(app, base));
         }
         if name == "Stardew Valley" {
             k.platform = Platform::Gog;
@@ -249,6 +250,31 @@ pub fn sample_data() -> VaultData {
     }
     data.trades.push(trade);
     data
+}
+
+/// Made-up store prices so screenshots show the Deals column (not real data).
+fn demo_prices(app: u32, at: jiff::Timestamp) -> keykeeper_core::GamePrices {
+    use keykeeper_core::{GamePrices, Money, ShopPrice};
+    let regular = 999 + (app % 3) as u64 * 1000;
+    let usd = |c: u64| Money::new(c, "USD");
+    let shop = |name: &str, cut: u64| ShopPrice {
+        shop: name.into(),
+        price: usd(regular * (100 - cut) / 100),
+        regular: Some(usd(regular)),
+        cut: cut as u8,
+        url: Some(format!("https://isthereanydeal.com/steam/app/{app}/")),
+    };
+    let mut p = GamePrices::empty("US", at);
+    p.shops = vec![
+        shop("Steam", [0, 50, 0, 75][(app % 4) as usize]),
+        shop("Fanatical", [10, 35, 60][(app % 3) as usize]),
+        shop("GOG", [0, 10, 25, 40][(app % 4) as usize]),
+        shop("Humble Store", 15),
+    ];
+    p.sort_shops();
+    p.history_low = Some(usd(regular / 5));
+    p.keyshop_low = Some(usd(regular * 35 / 100));
+    p
 }
 
 /// Replace the screen with an unlocked demo session.
