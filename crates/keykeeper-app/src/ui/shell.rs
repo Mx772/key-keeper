@@ -20,11 +20,15 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .h_full()
         .child(sidebar(s, sess, k))
         .child(col().key("page").grow(1.0).min_w(0.0).h_full().child(page));
-    let detail_open = sess.page == Page::Library && sess.form.is_some();
+    let detail_open = sess.page == Page::Library && (sess.form.is_some() || sess.bulk.is_some());
     if sess.page == Page::Library
         && let Some(form) = &sess.form
     {
-        body = body.child(detail::view(sess, form, s.steam_busy(), k, overlays));
+        body = body.child(detail::view(s, sess, form, s.steam_busy(), k, overlays));
+    } else if sess.page == Page::Library
+        && let Some(b) = &sess.bulk
+    {
+        body = body.child(super::bulk::view(sess, b, k, overlays));
     }
     overlays.extend(cart_bauble(s, sess, detail_open, k));
     confirm_dialog(sess, k, overlays);
@@ -259,6 +263,23 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
             "Mark all redeemed",
             false,
         ),
+        Confirm::BulkEdit => {
+            let n = sess.bulk.as_ref().map_or(0, |b| b.ids.len());
+            let status = sess.bulk.as_ref().and_then(|b| b.status);
+            (
+                format!("Change {n} keys?"),
+                match status {
+                    Some(st) if st.is_gone() => format!(
+                        "They'll all be marked {}. You can undo with {}.",
+                        st.label(),
+                        shortcut("Ctrl+Z")
+                    ),
+                    _ => format!("You can undo with {}.", shortcut("Ctrl+Z")),
+                },
+                "Apply",
+                false,
+            )
+        }
         Confirm::CancelTrade(_) => (
             "Cancel this trade?".to_string(),
             format!("Its keys go back to the status they had before you added them to the cart. You can undo with {}.", shortcut("Ctrl+Z")),
@@ -321,6 +342,11 @@ pub fn toasts(s: &AppState, k: &Kit) -> Option<El> {
         }
         if t.error {
             toast = toast.icon(k, k.glyph.circle_x);
+        }
+        if t.undo {
+            toast = toast.action(k, "Undo", true, move |s: &mut AppState, _: &mut Tx| {
+                s.undo_from_toast(id)
+            });
         }
         region = region.child(toast.build(k));
     }

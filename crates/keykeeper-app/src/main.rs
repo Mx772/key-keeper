@@ -11,6 +11,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod bulk;
 mod config;
 mod demo;
 mod form;
@@ -93,6 +94,14 @@ const SCENES: &[Scene] = &[
             s.open_row_menu(id, Some(rune::PointerPress { x: 520.0, y: 380.0 }));
             s.set_row_menu_status_open(true);
         }
+    }),
+    ("bulk-edit", |s| {
+        demo::unlock(s, demo::sample_data());
+        if let Some(x) = s.session_mut() {
+            let ids = x.rows.iter().take(5).copied().collect();
+            x.bulk = Some(bulk::BulkForm::new(ids));
+        }
+        s.with_bulk(|b| b.add_tags = rune::TextEdit::new("humble-2026"));
     }),
     ("cart-button", |s| {
         demo::unlock(s, demo::sample_data());

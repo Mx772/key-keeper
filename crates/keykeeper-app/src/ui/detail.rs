@@ -53,7 +53,14 @@ fn toggle_select(name: &'static str) -> impl Fn(&mut AppState) + Clone {
     }
 }
 
-pub fn view(sess: &Session, form: &KeyForm, busy: bool, k: &Kit, overlays: &mut Vec<El>) -> El {
+pub fn view(
+    _s: &AppState,
+    sess: &Session,
+    form: &KeyForm,
+    busy: bool,
+    k: &Kit,
+    overlays: &mut Vec<El>,
+) -> El {
     let fmt = sess.date_format();
     let existing = form.target.and_then(|id| sess.repo.key(id));
     let err = |f: &str| form.error_for(f, fmt);

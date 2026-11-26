@@ -2180,3 +2180,113 @@ fn arrows_ctrl_b_and_ctrl_c_drive_the_library() {
         Some(id)
     );
 }
+
+// ── bulk edit and undo toasts ─────────────────────────────────────────────────────────────────
+
+fn select_rows(rt: &mut Runtime<AppState>, n: usize) -> Vec<uuid::Uuid> {
+    let ids: Vec<_> = rt.state.session().unwrap().rows[..n].to_vec();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        for id in &ids {
+            x.table.select(id.to_string());
+        }
+    });
+    rt.frame(1.0 / 60.0);
+    ids
+}
+
+#[test]
+fn bulk_edit_changes_only_what_was_filled_in_as_one_undo_step() {
+    let mut rt = demo_rt();
+    let ids = select_rows(&mut rt, 1);
+    // `select` replaces the selection; build a multi-selection by hand.
+    let ids: Vec<_> = {
+        let rows = rt.state.session().unwrap().rows.clone();
+        let mut v = ids;
+        v.extend(rows[1..3].iter().copied());
+        v
+    };
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.bulk = Some(crate::bulk::BulkForm::new(ids.clone()));
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("bulk-edit").is_some());
+    let before: Vec<_> = ids
+        .iter()
+        .map(|id| rt.state.session().unwrap().repo.key(*id).unwrap().clone())
+        .collect();
+    rt.update(|s, _| {
+        s.with_bulk(|b| {
+            b.bundle = TextEdit::new("Bulk Bundle");
+            b.add_tags = TextEdit::new("bulk");
+        })
+    });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "bulk-edit-apply");
+    let s = rt.state.session().unwrap();
+    assert!(s.bulk.is_none(), "applying closes the pane");
+    for (id, old) in ids.iter().zip(&before) {
+        let k = s.repo.key(*id).unwrap();
+        assert_eq!(k.bundle.as_deref(), Some("Bulk Bundle"));
+        assert!(k.tags.contains(&"bulk".to_string()));
+        assert_eq!(k.status, old.status, "status untouched");
+        assert_eq!(k.redemption_deadline, old.redemption_deadline);
+    }
+    let toast = rt.state.toasts.last().unwrap();
+    assert!(toast.undo && toast.title == "Updated 3 keys");
+    let tid = toast.id;
+    rt.update(|s, _| s.undo_from_toast(tid));
+    let s = rt.state.session().unwrap();
+    for (id, old) in ids.iter().zip(&before) {
+        assert_eq!(
+            s.repo.key(*id).unwrap().bundle,
+            old.bundle,
+            "one undo reverts all"
+        );
+    }
+
+    // Marking keys redeemed in bulk asks first.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.bulk = Some(crate::bulk::BulkForm::new(ids.clone()));
+    });
+    rt.update(|s, _| s.with_bulk(|b| b.status = Some(KeyStatus::Redeemed)));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "bulk-edit-apply");
+    assert_eq!(rt.state.session().unwrap().confirm, Some(Confirm::BulkEdit));
+    click(&mut rt, "confirm-ok");
+    let s = rt.state.session().unwrap();
+    assert!(
+        ids.iter()
+            .all(|id| s.repo.key(*id).unwrap().status == KeyStatus::Redeemed)
+    );
+}
+
+#[test]
+fn bulk_bar_and_row_menu_open_the_bulk_editor() {
+    let mut rt = demo_rt();
+    let rows = rt.state.session().unwrap().rows.clone();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(rows[0].to_string());
+    });
+    rt.frame(1.0 / 60.0);
+    // Ctrl+A selects every row once the table has focus.
+    rt.key(KeyEvent::from(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(ctrl('a'));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().selected_ids().len() > 2);
+    let n = rt.state.session().unwrap().selected_ids().len();
+    assert!(n > 2);
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "bulk-edit-open");
+    assert!(rt.state.session().unwrap().bulk.is_some());
+    assert!(rt.find("bulk-edit").is_some());
+    rt.key(KeyEvent::from(Key::Escape));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().bulk.is_none());
+}

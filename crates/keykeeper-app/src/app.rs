@@ -27,6 +27,7 @@ use keykeeper_steam::SteamApi;
 /// Unsaved changes reach disk this long after the last edit.
 pub const AUTOSAVE_DELAY: f64 = 1.5;
 const TOAST_SECS: f64 = 3.5;
+const UNDO_TOAST_SECS: f64 = 7.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -72,6 +73,8 @@ pub struct Toast {
     pub detail: Option<String>,
     pub error: bool,
     pub until: f64,
+    /// Shows an Undo button (the change it reports is the newest undo step).
+    pub undo: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +117,8 @@ pub enum Confirm {
     CancelTrade(Uuid),
     /// Self-checkout: mark every key in the cart as redeemed on my account.
     RedeemCart,
+    /// Apply the open bulk edit.
+    BulkEdit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,6 +184,8 @@ pub struct Session {
     pub bulk_status_open: bool,
     /// The right-click menu on library rows.
     pub row_menu: Option<crate::library_actions::RowMenu>,
+    /// Editing several keys at once (shown in the editor pane).
+    pub bulk: Option<crate::bulk::BulkForm>,
     /// The keyboard shortcuts overlay.
     pub shortcuts_open: bool,
     // other pages
@@ -235,6 +242,7 @@ impl Session {
             confirm: None,
             bulk_status_open: false,
             row_menu: None,
+            bulk: None,
             shortcuts_open: false,
             import: ImportUi::new(date_format),
             settings_ui: SettingsUi::default(),
@@ -471,6 +479,25 @@ impl AppState {
         self.push_toast(title.into(), None, false);
     }
 
+    /// A toast for a change that can be undone, with an Undo button when `undoable`.
+    pub fn toast_undo(&mut self, title: impl Into<String>, undoable: bool) {
+        self.push_toast(title.into(), None, false);
+        if undoable && let Some(t) = self.toasts.last_mut() {
+            t.undo = true;
+            t.until = self.now + UNDO_TOAST_SECS;
+        }
+    }
+
+    /// The Undo button on a toast: undo, and drop the toast.
+    pub fn undo_from_toast(&mut self, id: u64) {
+        self.dismiss_toast(id);
+        // Older undo toasts describe steps under this one; they no longer match.
+        for t in &mut self.toasts {
+            t.undo = false;
+        }
+        self.undo();
+    }
+
     pub fn toast_detail(&mut self, title: impl Into<String>, detail: impl Into<String>) {
         self.push_toast(title.into(), Some(detail.into()), false);
     }
@@ -488,6 +515,7 @@ impl AppState {
             detail,
             error,
             until,
+            undo: false,
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -827,6 +855,7 @@ impl AppState {
             && let Some(k) = s.repo.key(id)
         {
             s.form = Some(KeyForm::from_key(k, s.date_format()));
+            s.bulk = None;
         }
     }
 
@@ -943,6 +972,7 @@ impl AppState {
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
             Confirm::CancelTrade(id) => self.cancel_trade_now(id),
             Confirm::RedeemCart => self.redeem_cart_now(),
+            Confirm::BulkEdit => self.apply_bulk_now(),
         }
     }
 
@@ -1351,6 +1381,7 @@ impl AppState {
                 };
                 if std::mem::take(&mut s.shortcuts_open)
                     || s.row_menu.take().is_some()
+                    || s.bulk.take().is_some()
                     || s.confirm.take().is_some()
                     || s.bulk_status_open
                     || s.form.take().is_some()

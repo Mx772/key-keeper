@@ -46,7 +46,9 @@ pub fn wrap(sess: &Session, area: El, k: &Kit, overlays: &mut Vec<El>) -> El {
         .min_width(230.0)
         .on_close(|s: &mut AppState| s.close_row_menu());
     if n > 1 {
-        m = m.group_label(format!("{n} keys selected"));
+        m = m.group_label(format!("{n} keys selected")).item(
+            item(&format!("Edit {n} keys…"), |s, _| s.open_bulk_edit()).key("menu-bulk-edit"),
+        );
     }
 
     if let Some(k0) = single {

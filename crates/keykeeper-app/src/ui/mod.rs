@@ -1,6 +1,7 @@
 //! Views. Each page is a function `(&AppState, &Kit, &mut overlays) -> El`; all behaviour goes
 //! through `AppState` methods.
 
+mod bulk;
 mod card;
 mod cart;
 mod detail;

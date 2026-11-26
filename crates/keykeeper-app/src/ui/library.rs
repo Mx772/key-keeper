@@ -210,10 +210,12 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
     row()
         .key("bulk-bar")
         .w_full()
-        .h(48.0)
+        .min_h(48.0)
         .px(14.0)
-        .gap(10.0)
+        .py(7.0)
+        .gap(8.0)
         .center_y()
+        .flex_wrap()
         .radius(k.radius.lg)
         .fill(k.c.surface_raised)
         .border(1.0, k.c.border_weak)
@@ -223,6 +225,16 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
                 .color(k.c.text_strong),
         )
         .child(spacer())
+        .child(
+            el().key("bulk-edit-open").child(
+                Button::new("Edit…")
+                    .variant(ButtonVariant::Neutral)
+                    .disabled(n < 2)
+                    .help("Change status, bundle, tags or deadline for all of them")
+                    .on_press(|s: &mut AppState| s.open_bulk_edit())
+                    .build(k),
+            ),
+        )
         .child(
             el().key("bulk-steam").child(
                 Button::new("Match on Steam")
