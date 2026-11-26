@@ -96,8 +96,12 @@ impl KeyForm {
         if self.name.text.trim().is_empty() {
             e.push(("name", "Game name is required".to_string()));
         }
-        if self.key.text.trim().is_empty() {
-            e.push(("key", "Key is required".to_string()));
+        // "Other" entries (software, website redemptions) may have only a link.
+        if self.key.text.trim().is_empty() && !matches!(self.platform, Platform::Other(_)) {
+            e.push((
+                "key",
+                "Key is required (or set the platform to Other)".to_string(),
+            ));
         }
         if let Some(t) = opt(&self.app_id)
             && parse_app_id(&t).is_none()

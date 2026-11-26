@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::data::VaultData;
-use crate::model::{KeyStatus, TradeSite, TradeStatus};
+use crate::model::{KeyStatus, Platform, TradeSite, TradeStatus};
 
 const EXAMPLE: &str = include_str!("../../tests/fixtures/example_import.csv");
 const EXCEL: &str = include_str!("../../tests/fixtures/excel_sheet.csv");
@@ -89,9 +89,12 @@ fn excel_sheet_statuses_dates_errors_and_duplicates() {
     let p = preview(&t, &us(), &repo);
     assert_eq!(
         (p.new_count(), p.duplicate_count(), p.error_count()),
-        (4, 1, 2),
+        (5, 1, 1),
         "{p:#?}"
     );
+    let outer = key(&p, "Outer Wilds");
+    assert!(outer.key.expose().is_empty(), "keyless rows are kept");
+    assert_eq!(outer.platform, Platform::Other("Other".into()));
 
     let haiku = key(&p, "Haiku, the Robot");
     assert_eq!(haiku.status, KeyStatus::Traded);
@@ -127,10 +130,7 @@ fn excel_sheet_statuses_dates_errors_and_duplicates() {
         .collect();
     assert_eq!(
         errors,
-        [
-            (6, &RowOutcome::Error("no game name and no key".into())),
-            (7, &RowOutcome::Error("no key".into()))
-        ]
+        [(6, &RowOutcome::Error("no game name and no key".into()))]
     );
 
     let dup = p
@@ -156,7 +156,7 @@ fn reimport_is_all_duplicates_and_skipped() {
         let p = preview(&t, &us(), &repo);
         commit(&mut repo, &p, false)
     };
-    assert_eq!(first.added, 4);
+    assert_eq!(first.added, 5);
     assert_eq!(first.skipped_duplicates, 1);
 
     let again = preview(&t, &us(), &repo);
@@ -176,7 +176,7 @@ fn reimport_is_all_duplicates_and_skipped() {
     );
     let s = commit(&mut repo, &again, false);
     assert_eq!(s.added, 0);
-    assert_eq!(repo.keys().len(), 4);
+    assert_eq!(repo.keys().len(), 5);
 }
 
 #[test]
@@ -186,9 +186,9 @@ fn import_is_one_undo_step() {
         let p = preview(&parse(EXCEL), &us(), &repo);
         commit(&mut repo, &p, false)
     };
-    assert_eq!(repo.keys().len(), 4);
+    assert_eq!(repo.keys().len(), 5);
     assert_eq!(repo.trades().len(), 1);
-    assert_eq!(repo.undo_label(), Some("Import 4 keys"));
+    assert_eq!(repo.undo_label(), Some("Import 5 keys"));
     repo.undo();
     assert!(repo.keys().is_empty());
     assert!(repo.trades().is_empty());
@@ -319,7 +319,7 @@ fn include_duplicates_when_asked() {
         let p = preview(&parse(EXCEL), &us(), &repo);
         commit(&mut repo, &p, true)
     };
-    assert_eq!((s.added, s.skipped_duplicates), (5, 0));
+    assert_eq!((s.added, s.skipped_duplicates), (6, 0));
 }
 
 proptest! {
@@ -341,4 +341,38 @@ proptest! {
         let p = preview(&parse(&input), &us(), &repo);
         let _ = commit(&mut repo2, &p, true);
     }
+}
+
+#[test]
+fn self_links_text_dates_and_keyless_rows() {
+    let csv = "Game,Key,Redeemed,Redeem/Trade Date,Trade Link,Redemption Deadline\n\
+               A,AAAAA-11111-AAAAA,,Unknown,Self,\"June 24, 2026 at 11:00:00 AM PDT\"\n\
+               B,BBBBB-22222-BBBBB,X,\"Oct 4th, 2025\",,\n\
+               Some App,https://example.com/redeem/abc,,,,\n\
+               Other App,,,,,\n";
+    let mut repo = Repo::new(VaultData::default());
+    let p = preview(&parse(csv), &us(), &repo);
+    assert!(p.rows.iter().all(|r| r.warnings.is_empty()), "{p:#?}");
+    assert_eq!((p.new_count(), p.error_count()), (4, 0));
+
+    let a = &p.rows[0];
+    assert_eq!(a.trade_url, None, "'Self' is not a trade");
+    let ak = a.key.as_ref().unwrap();
+    assert_eq!(ak.status, KeyStatus::Redeemed);
+    assert_eq!(ak.status_date, None);
+    assert_eq!(ak.redemption_deadline, Some(date(2026, 6, 24)));
+    assert_eq!(key(&p, "B").status_date, Some(date(2025, 10, 4)));
+
+    let app = key(&p, "Some App");
+    assert_eq!(app.key.expose(), "");
+    assert_eq!(
+        app.key_url.as_deref(),
+        Some("https://example.com/redeem/abc")
+    );
+    assert_eq!(app.platform, Platform::Other("Other".into()));
+
+    let s = commit(&mut repo, &p, false);
+    assert_eq!((s.added, s.trades_created), (4, 0));
+    let again = preview(&parse(csv), &us(), &repo);
+    assert_eq!(again.new_count(), 0, "keyless rows dedupe by name and link");
 }

@@ -269,10 +269,18 @@ pub fn preview(table: &Table, opts: &ImportOptions, repo: &Repo) -> ImportPrevie
         let line = table.lines.get(i).copied().unwrap_or(i + 1);
         let mut warnings = Vec::new();
         let name = get(Field::GameName);
-        let code = get(Field::Key);
+        let mut code = get(Field::Key);
+        // A link in the key column: the key lives on a website (common for software).
+        let link_as_key = values::is_url(code).then(|| code.to_string());
+        if link_as_key.is_some() {
+            code = "";
+        }
+        // In a spreadsheet, a named row without a key is still worth keeping (a redeem link, a
+        // gift, software). In a plain-text list it's just a line that isn't a key.
+        let keyless_ok = table.kind != TableKind::Text;
         let error = match (name.is_empty(), code.is_empty()) {
             (true, true) => Some("no game name and no key".to_string()),
-            (_, true) => Some("no key".to_string()),
+            (false, true) if !keyless_ok => Some("no key".to_string()),
             (true, _) => Some("no game name".to_string()),
             _ => None,
         };
@@ -290,15 +298,19 @@ pub fn preview(table: &Table, opts: &ImportOptions, repo: &Repo) -> ImportPrevie
         }
 
         let mut k = GameKey::new(name, Secret::new(code));
+        // "Self" (or "me", …) in the trade link column means I redeemed it myself.
+        let self_redeemed = values::is_self(get(Field::TradeUrl));
         let trade_url = Some(get(Field::TradeUrl))
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.is_empty() && !self_redeemed)
             .map(str::to_string);
         if let Some(u) = &trade_url
             && !values::is_url(u)
         {
             warnings.push(format!("trade link '{u}' doesn't look like a URL"));
         }
-        let (status, warn) = if cols.contains_key(&Field::Status) {
+        let (status, warn) = if self_redeemed && get(Field::Status).is_empty() {
+            (opts.status.done_without_link, None)
+        } else if cols.contains_key(&Field::Status) {
             opts.status.map(get(Field::Status), trade_url.is_some())
         } else if trade_url.is_some() {
             (opts.status.done_with_link, None)
@@ -308,6 +320,7 @@ pub fn preview(table: &Table, opts: &ImportOptions, repo: &Repo) -> ImportPrevie
         k.status = status;
         warnings.extend(warn);
         k.platform = match get(Field::Platform) {
+            "" if code.is_empty() => Platform::Other("Other".into()),
             "" => opts.default_platform.clone(),
             p => Platform::parse(p),
         };
@@ -328,6 +341,9 @@ pub fn preview(table: &Table, opts: &ImportOptions, repo: &Repo) -> ImportPrevie
                 warnings.push(format!("key link '{u}' ignored: not a URL"));
             }
         }
+        if k.key_url.is_none() {
+            k.key_url = link_as_key;
+        }
         if let Some(s) = text(Field::SteamAppId) {
             match values::parse_app_id(&s) {
                 Some(id) => k.steam_app_id = Some(id),
@@ -344,11 +360,25 @@ pub fn preview(table: &Table, opts: &ImportOptions, repo: &Repo) -> ImportPrevie
             }
         }
 
-        let norm = normalize_key(code);
-        let outcome = match (
-            repo.find_by_key(code).map(|e| e.id),
-            seen.get(&norm).copied(),
-        ) {
+        // Keyless rows are told apart by name and link instead.
+        let (norm, existing) = if code.is_empty() {
+            let same = |e: &GameKey| {
+                e.key.expose().is_empty()
+                    && e.game_name.eq_ignore_ascii_case(&k.game_name)
+                    && e.key_url == k.key_url
+            };
+            (
+                format!(
+                    "\0{}\0{}",
+                    k.game_name.to_lowercase(),
+                    k.key_url.as_deref().unwrap_or("")
+                ),
+                repo.keys().iter().find(|e| same(e)).map(|e| e.id),
+            )
+        } else {
+            (normalize_key(code), repo.find_by_key(code).map(|e| e.id))
+        };
+        let outcome = match (existing, seen.get(&norm).copied()) {
             (None, None) => RowOutcome::New,
             (existing, earlier_row) => RowOutcome::Duplicate {
                 existing,

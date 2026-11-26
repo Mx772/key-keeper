@@ -24,13 +24,128 @@ pub fn clean(s: &str) -> &str {
     if is_null(t) { "" } else { t }
 }
 
+/// Date cells that mean "no date" rather than a mistake.
+const NO_DATE: &[&str] = &[
+    "unknown",
+    "?",
+    "??",
+    "???",
+    "tbd",
+    "tba",
+    "never",
+    "no deadline",
+    "no expiry",
+    "no expiration",
+    "does not expire",
+    "doesn't expire",
+];
+
 /// Parse a date cell. ISO `YYYY-MM-DD` is always accepted; `a/b/yyyy` (also with `.` or `-`)
 /// follows `format`. Two-digit years mean 20xx. A trailing time (`1/7/2026 13:45`) is ignored.
+/// Month names work too (`Oct 4th, 2025`, `4 October 2025`, `June 24, 2026 at 11:00 AM PDT`),
+/// and `Unknown` / `?` / `TBD` mean no date.
 pub fn parse_date(s: &str, format: DateFormat) -> Result<Option<Date>, String> {
     let t = clean(s);
-    if t.is_empty() {
+    if t.is_empty() || NO_DATE.contains(&t.to_lowercase().as_str()) {
         return Ok(None);
     }
+    match parse_numeric_date(t, format) {
+        Err(e) if t.chars().any(|c| c.is_alphabetic()) => match parse_text_date(t) {
+            Some(r) => r.map(Some),
+            None => Err(e),
+        },
+        r => r,
+    }
+}
+
+const MONTHS: [&str; 12] = [
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+];
+const WEEKDAYS: [&str; 7] = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
+
+/// `"oct"`, `"Sept"`, `"October"` → 10. At least three letters.
+fn month_number(tok: &str) -> Option<i32> {
+    let t = tok.to_lowercase();
+    let t = if t == "sept" { "sep".to_string() } else { t };
+    if t.len() < 3 {
+        return None;
+    }
+    MONTHS
+        .iter()
+        .position(|m| m.starts_with(&t))
+        .map(|i| i as i32 + 1)
+}
+
+/// A date written with a month name. `None` when there is no month name (not this format);
+/// `Some(Err)` when there is one but the rest doesn't fit.
+fn parse_text_date(t: &str) -> Option<Result<Date, String>> {
+    let mut month = None;
+    let mut nums: Vec<(i32, usize)> = Vec::new();
+    let mut bad = false;
+    for tok in t.split(|c: char| c.is_whitespace() || matches!(c, ',' | '/' | '.' | '-')) {
+        if tok.is_empty() {
+            continue;
+        }
+        let lower = tok.to_lowercase();
+        // A time and whatever follows it (AM/PM, time zone) don't matter for a date.
+        if lower == "at" || lower.contains(':') {
+            break;
+        }
+        if lower == "of" || (lower.len() >= 3 && WEEKDAYS.iter().any(|w| w.starts_with(&lower))) {
+            continue;
+        }
+        if let Some(m) = month_number(&lower) {
+            if month.replace(m).is_some() {
+                bad = true;
+            }
+            continue;
+        }
+        let digits = ["st", "nd", "rd", "th"]
+            .iter()
+            .find_map(|suf| lower.strip_suffix(suf))
+            .unwrap_or(&lower);
+        match digits.parse::<i32>() {
+            Ok(n) => nums.push((n, digits.len())),
+            Err(_) => bad = true,
+        }
+    }
+    let month = month?;
+    let invalid = || Err(format!("'{t}' is not a valid date"));
+    if bad || nums.len() != 2 {
+        return Some(invalid());
+    }
+    // The four-digit number is the year; otherwise the last number is (`Oct 4 25`, `4 Oct 25`).
+    let (day, year) = match (nums[0], nums[1]) {
+        ((y, 4), (d, _)) => (d, y),
+        ((d, _), (y, _)) => (d, if y < 100 { 2000 + y } else { y }),
+    };
+    let (Ok(y), Ok(m), Ok(d)) = (i16::try_from(year), i8::try_from(month), i8::try_from(day))
+    else {
+        return Some(invalid());
+    };
+    Some(Date::new(y, m, d).or_else(|_| invalid()))
+}
+
+fn parse_numeric_date(t: &str, format: DateFormat) -> Result<Option<Date>, String> {
     let first = t.split([' ', 'T']).next().unwrap_or(t);
     let parts: Vec<&str> = first.split(['/', '.', '-']).collect();
     let nums: Option<Vec<i32>> = parts.iter().map(|p| p.parse::<i32>().ok()).collect();
@@ -161,6 +276,23 @@ pub fn parse_app_id(s: &str) -> Option<u32> {
     t.parse().ok().or_else(|| links::steam_app_id_from_url(t))
 }
 
+/// A trade-link cell saying the key was redeemed by its owner, not traded.
+pub fn is_self(s: &str) -> bool {
+    matches!(
+        clean(s).to_lowercase().as_str(),
+        "self"
+            | "me"
+            | "myself"
+            | "mine"
+            | "own"
+            | "kept"
+            | "personal"
+            | "self redeemed"
+            | "self-redeemed"
+            | "redeemed myself"
+    )
+}
+
 pub fn is_url(s: &str) -> bool {
     links::host(s).is_some()
 }
@@ -200,6 +332,41 @@ mod tests {
             Ok(Some(date(2026, 1, 7)))
         );
         assert_eq!(parse_date("None", MDY), Ok(None));
+    }
+
+    #[test]
+    fn unknown_dates_are_empty() {
+        for s in ["Unknown", "unknown", "?", "TBD", "Never"] {
+            assert_eq!(parse_date(s, MDY), Ok(None), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn dates_with_month_names() {
+        let oct4 = Ok(Some(date(2025, 10, 4)));
+        for s in [
+            "Oct 4th, 2025",
+            "Oct 4, 2025",
+            "October 4 2025",
+            "4 Oct 2025",
+            "4th of October, 2025",
+            "Saturday, October 4, 2025",
+            "2025-Oct-04",
+            "Oct 4, 25",
+        ] {
+            assert_eq!(parse_date(s, DMY), oct4, "{s:?}");
+        }
+        assert_eq!(
+            parse_date("June 24, 2026 at 11:00:00 AM PDT", MDY),
+            Ok(Some(date(2026, 6, 24)))
+        );
+        assert_eq!(
+            parse_date("Sept 1 2026 10:00", MDY),
+            Ok(Some(date(2026, 9, 1)))
+        );
+        assert!(parse_date("Feb 30, 2026", MDY).is_err());
+        assert!(parse_date("Oct 2025", MDY).is_err());
+        assert!(parse_date("Oct 4 sometime 2025", MDY).is_err());
     }
 
     #[test]
