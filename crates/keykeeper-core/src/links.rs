@@ -13,6 +13,19 @@ pub fn itad(app_id: u32) -> String {
     format!("https://isthereanydeal.com/steam/app/{app_id}/")
 }
 
+/// Steam's key activation page with `key` prefilled.
+pub fn steam_register(key: &str) -> String {
+    let mut enc = String::new();
+    for b in key.trim().bytes() {
+        if b.is_ascii_alphanumeric() || b == b'-' {
+            enc.push(b as char);
+        } else {
+            enc.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("https://store.steampowered.com/account/registerkey?key={enc}")
+}
+
 /// Lowercased host of an `http(s)://` URL, without a leading `www.`. No URL crate needed for this.
 pub fn host(url: &str) -> Option<String> {
     let rest = url
@@ -64,6 +77,18 @@ mod tests {
         );
         assert_eq!(host("ftp://x"), None);
         assert_eq!(host("https:///x"), None);
+    }
+
+    #[test]
+    fn register_url_encodes_the_key() {
+        assert_eq!(
+            steam_register(" AAAAA-BBBBB-CCCCC "),
+            "https://store.steampowered.com/account/registerkey?key=AAAAA-BBBBB-CCCCC"
+        );
+        assert_eq!(
+            steam_register("A B&C"),
+            "https://store.steampowered.com/account/registerkey?key=A%20B%26C"
+        );
     }
 
     #[test]

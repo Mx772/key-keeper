@@ -112,6 +112,8 @@ pub enum Confirm {
     DeleteKeys(Vec<Uuid>),
     ExportPlain(ExportKind),
     CancelTrade(Uuid),
+    /// Self-checkout: mark every key in the cart as redeemed on my account.
+    RedeemCart,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,15 +198,19 @@ impl Session {
     pub fn new(vault: Vault, data: VaultData) -> Session {
         let date_format = data.settings.date_format;
         let templates = data.templates.clone();
-        let steam_ui = SteamUi {
-            profile: TextEdit::new(data.settings.steam_id.clone().unwrap_or_default()),
-            api_key: TextEdit::new(
-                data.api_keys
-                    .steam
-                    .as_ref()
+        let secret = |k: &Option<keykeeper_core::Secret>| {
+            TextEdit::new(
+                k.as_ref()
                     .map(|k| k.expose().to_string())
                     .unwrap_or_default(),
-            ),
+            )
+        };
+        let steam_ui = SteamUi {
+            profile: TextEdit::new(data.settings.steam_id.clone().unwrap_or_default()),
+            api_key: secret(&data.api_keys.steam),
+            itad_key: secret(&data.api_keys.itad),
+            gg_key: secret(&data.api_keys.gg_deals),
+            country: TextEdit::new(data.settings.price_country.clone()),
             ..SteamUi::default()
         };
         let repo = Repo::new(data);
@@ -349,6 +355,9 @@ pub struct AppState {
     pub job: Option<Job>,
     /// Update checks and installs (the source is a fake in tests).
     pub updates: Updates,
+    /// Keys were just added to the cart: the floating cart button springs up until this time.
+    cart_bump_until: f64,
+    pub(crate) cart_bump_pending: bool,
 }
 
 pub fn today() -> Date {
@@ -377,6 +386,8 @@ impl AppState {
             jobs: Arc::new(Mutex::new(Vec::new())),
             job: None,
             updates: Updates::new(crate::update::real_source()),
+            cart_bump_until: 0.0,
+            cart_bump_pending: false,
         }
     }
 
@@ -385,6 +396,10 @@ impl AppState {
         let path = Config::default_path();
         let config = path.as_deref().map(Config::load).unwrap_or_default();
         AppState::new(config, path, KdfParams::DEFAULT)
+    }
+
+    pub fn cart_bumping(&self) -> bool {
+        self.cart_bump_pending || self.now < self.cart_bump_until
     }
 
     pub fn session(&self) -> Option<&Session> {
@@ -622,6 +637,18 @@ impl AppState {
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
         changed |= self.poll_updates(now, tx);
+        if std::mem::take(&mut self.cart_bump_pending) {
+            self.cart_bump_until = now + 0.3;
+            changed = true;
+        }
+        if self.cart_bump_until > 0.0 {
+            if now >= self.cart_bump_until {
+                self.cart_bump_until = 0.0;
+                changed = true;
+            } else {
+                tx.wake_after(Duration::from_secs_f64(self.cart_bump_until - now));
+            }
+        }
         if self.job.is_some() {
             tx.wake_after(Duration::from_millis(250));
             changed = true; // progress text
@@ -873,6 +900,7 @@ impl AppState {
             }
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
             Confirm::CancelTrade(id) => self.cancel_trade_now(id),
+            Confirm::RedeemCart => self.redeem_cart_now(),
         }
     }
 
@@ -973,6 +1001,7 @@ impl AppState {
             "deadline" => SortField::Deadline,
             "source" => SortField::Source,
             "rating" => SortField::Rating,
+            "deals" => SortField::Price,
             _ => SortField::Added,
         };
         let dir = if matches!(dir, rune_kit::SortDir::Descending) {

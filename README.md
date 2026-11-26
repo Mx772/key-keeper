@@ -16,13 +16,15 @@ Built in Rust with the [RUNE](https://github.com/anomalyco/rune) GPU UI framewor
 - **Import.** Reads CSV/TSV exports, Excel or Sheets pastes, and plain lists like `Game: XXXXX-XXXXX-XXXXX`. Columns are matched automatically and you can remap them. Dates follow a day-first or month-first setting. A preview marks each row as new, duplicate or error before anything is added.
 - **Export.** CSV (re-imports cleanly), JSON, or an encrypted backup copy.
 - **Trading.**
-  - Add keys to a cart and copy the checkout text (`{name}: {key}` by default).
+  - Add keys to a cart (a floating cart button shows the count) and copy the checkout text (`{name}: {key}` by default).
   - Record the partner, trade link and what you receive. Mark the trade as sent, then complete it: your keys become *Traded*, and received games can be added to your library.
   - Generate a steamtrades reputation post. Both texts come from templates you can edit.
 - **Steam.**
   - Match games to Steam app ids, then fetch review scores.
   - Check your public wishlist, and your library if you add a Web API key.
-  - Links to Steam, gg.deals and IsThereAnyDeal.
+  - Game names link to their Steam page, and the key editor has link buttons for Steam, gg.deals and IsThereAnyDeal.
+  - **Redeem on Steam** opens Steam's activation page with the key filled in and marks the key Redeemed with today's date. Non-Steam keys get **Mark redeemed by me**. In the cart, each key has a Redeem button, and **Self-checkout** marks every cart key redeemed.
+- **Prices.** With an IsThereAnyDeal and/or gg.deals API key and your country (Settings › Prices), the library's Deals column shows each game's cheapest current store price. Hover it to see every store, the all-time low and the keyshop price; click it to open the deal.
 - **Security.** Copied keys are excluded from clipboard history and cleared after a delay. The app locks itself when idle and saves before locking.
 - **Themes.** Midnight (default), Amethyst, Forest, Opencode, Graphite, Light, System.
 

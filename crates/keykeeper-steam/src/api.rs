@@ -3,6 +3,10 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::deals::{
+    self, GG_DEALS_BATCH, GgBatch, ITAD_LOOKUP_BATCH, ITAD_PRICES_BATCH, ITAD_STEAM_SHOP,
+    ItadPrices, service_err,
+};
 use crate::http::Http;
 use crate::{Result, SteamError};
 
@@ -63,15 +67,42 @@ pub trait SteamApi: Send + Sync {
     /// App ids on a public wishlist (empty if private or empty).
     fn wishlist(&self, steam_id: u64) -> Result<Vec<u32>>;
     fn owned_games(&self, api_key: &str, steam_id: u64) -> Result<Vec<u32>>;
+    /// IsThereAnyDeal prices for Steam apps in `country` (two letters). Apps ITAD doesn't know
+    /// are omitted.
+    fn itad_prices(
+        &self,
+        _api_key: &str,
+        _country: &str,
+        _app_ids: &[u32],
+    ) -> Result<Vec<ItadPrices>> {
+        Err(SteamError::Unsupported("IsThereAnyDeal"))
+    }
+    /// gg.deals prices for Steam apps in `region` (gg.deals' lowercase region code).
+    fn gg_deals_prices(&self, _api_key: &str, _region: &str, _app_ids: &[u32]) -> Result<GgBatch> {
+        Err(SteamError::Unsupported("gg.deals"))
+    }
 }
+
+/// gg.deals allows 100 games a minute: wait this long between batches of 100.
+pub const GG_DEALS_PAUSE: std::time::Duration = std::time::Duration::from_secs(61);
 
 pub struct Steam<H: Http> {
     http: H,
+    gg_pause: std::time::Duration,
 }
 
 impl<H: Http> Steam<H> {
     pub fn new(http: H) -> Steam<H> {
-        Steam { http }
+        Steam {
+            http,
+            gg_pause: GG_DEALS_PAUSE,
+        }
+    }
+
+    /// Change the pause between gg.deals batches (tests use zero).
+    pub fn with_gg_pause(mut self, pause: std::time::Duration) -> Steam<H> {
+        self.gg_pause = pause;
+        self
     }
 }
 
@@ -145,6 +176,89 @@ impl<H: Http> SteamApi for Steam<H> {
             Err(SteamError::Status(401 | 403)) => Err(SteamError::BadApiKey),
             r => parse_owned(&r?),
         }
+    }
+
+    fn itad_prices(
+        &self,
+        api_key: &str,
+        country: &str,
+        app_ids: &[u32],
+    ) -> Result<Vec<ItadPrices>> {
+        let itad = |e| service_err("IsThereAnyDeal", e);
+        let mut ids: Vec<(u32, String)> = Vec::new();
+        for chunk in app_ids.chunks(ITAD_LOOKUP_BATCH) {
+            let body: Vec<String> = chunk.iter().map(|a| format!("app/{a}")).collect();
+            let body =
+                serde_json::to_string(&body).map_err(|e| SteamError::Parse(e.to_string()))?;
+            let res = self
+                .http
+                .post_json(
+                    &format!("https://api.isthereanydeal.com/lookup/id/shop/{ITAD_STEAM_SHOP}/v1"),
+                    &[("key", api_key)],
+                    &body,
+                )
+                .map_err(itad)?;
+            ids.extend(deals::parse_itad_lookup(&res)?);
+        }
+        let mut out = Vec::new();
+        for chunk in ids.chunks(ITAD_PRICES_BATCH) {
+            let body: Vec<&str> = chunk.iter().map(|(_, g)| g.as_str()).collect();
+            let body =
+                serde_json::to_string(&body).map_err(|e| SteamError::Parse(e.to_string()))?;
+            let res = self
+                .http
+                .post_json(
+                    "https://api.isthereanydeal.com/games/prices/v3",
+                    &[("key", api_key), ("country", country)],
+                    &body,
+                )
+                .map_err(itad)?;
+            for (gid, deals, history_low) in deals::parse_itad_prices(&res)? {
+                for (app_id, _) in chunk.iter().filter(|(_, g)| *g == gid) {
+                    out.push(ItadPrices {
+                        app_id: *app_id,
+                        deals: deals.clone(),
+                        history_low: history_low.clone(),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn gg_deals_prices(&self, api_key: &str, region: &str, app_ids: &[u32]) -> Result<GgBatch> {
+        let mut out = GgBatch::default();
+        for (i, chunk) in app_ids.chunks(GG_DEALS_BATCH).enumerate() {
+            if i > 0 {
+                std::thread::sleep(self.gg_pause);
+            }
+            let ids: Vec<String> = chunk.iter().map(u32::to_string).collect();
+            let ids = ids.join(",");
+            let step = self
+                .http
+                .get_with_status(
+                    "https://api.gg.deals/v1/prices/by-steam-app-id/",
+                    &[("ids", &ids), ("key", api_key), ("region", region)],
+                )
+                .and_then(|(status, body)| match status {
+                    200..=299 => deals::parse_gg_deals(&body),
+                    s => Err(deals::gg_deals_error(s, &body)),
+                });
+            match step {
+                Ok((prices, seen)) => {
+                    out.prices.extend(prices);
+                    out.seen.extend(seen);
+                }
+                // Nothing fetched yet: the whole request failed.
+                Err(e) if out.seen.is_empty() => return Err(e),
+                // Keep what earlier batches got; the rest is retried next time.
+                Err(e) => {
+                    out.error = Some(e);
+                    break;
+                }
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -339,6 +453,11 @@ mod tests {
             }
             (self.answer)(url)
         }
+        fn post_json(&self, url: &str, query: &[(&str, &str)], body: &str) -> Result<String> {
+            let mut q = query.to_vec();
+            q.push(("body", body));
+            self.get(url, &q)
+        }
     }
 
     fn fake(answer: fn(&str) -> Result<String>) -> Steam<Fake> {
@@ -346,6 +465,29 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             answer,
         })
+        .with_gg_pause(std::time::Duration::ZERO)
+    }
+
+    #[test]
+    fn gg_deals_batches_by_hundred_and_keeps_partial_results() {
+        // Second batch is rate-limited: the first batch's results are kept.
+        let s = fake(|_| {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            if N.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(r#"{"success":true,"data":{"1":{"url":"u","prices":{"currentRetail":"1.00","currentKeyshops":null,"currency":"USD"}},"2":null}}"#.into())
+            } else {
+                Err(SteamError::Status(429))
+            }
+        });
+        let ids: Vec<u32> = (1..=150).collect();
+        let got = s.gg_deals_prices("k", "us", &ids).unwrap();
+        assert_eq!(s.http.calls.lock().unwrap().len(), 2);
+        assert_eq!(got.prices.len(), 1);
+        assert_eq!(got.seen, vec![1, 2]);
+        assert!(got.error.is_some());
+        let first = &s.http.calls.lock().unwrap()[0].1;
+        assert_eq!(first[0].1.split(',').count(), 100);
     }
 
     #[test]
@@ -395,6 +537,61 @@ mod tests {
         assert_eq!(s.owned_games("key", 1).unwrap(), vec![391540, 367520]);
         let q = &s.http.calls.lock().unwrap()[0].1;
         assert!(q.contains(&("key".to_string(), "key".to_string())));
+    }
+
+    #[test]
+    fn itad_prices_look_up_then_price() {
+        let s = fake(|url| {
+            Ok(if url.contains("/lookup/") {
+                r#"{"app/220":"g1","app/400":null}"#.to_string()
+            } else {
+                r#"[{"id":"g1","historyLow":{"all":null},"deals":[{"shop":{"id":61,"name":"Steam"},"price":{"amount":1.0,"amountInt":100,"currency":"USD"},"cut":0,"url":"u"}]}]"#.to_string()
+            })
+        });
+        let got = s.itad_prices("k", "GB", &[220, 400]).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].app_id, 220);
+        assert_eq!(got[0].deals[0].price.cents, 100);
+        let calls = s.http.calls.lock().unwrap();
+        assert!(calls[0].0.ends_with("/lookup/id/shop/61/v1"));
+        assert!(
+            calls[0]
+                .1
+                .contains(&("body".into(), r#"["app/220","app/400"]"#.into()))
+        );
+        assert!(calls[1].1.contains(&("country".into(), "GB".into())));
+        assert!(calls[1].1.contains(&("body".into(), r#"["g1"]"#.into())));
+    }
+
+    #[test]
+    fn price_services_map_auth_errors() {
+        let s = fake(|_| Err(SteamError::Status(403)));
+        assert_eq!(
+            s.itad_prices("bad", "US", &[1]),
+            Err(SteamError::BadServiceKey("IsThereAnyDeal"))
+        );
+        assert_eq!(
+            s.gg_deals_prices("bad", "us", &[1]),
+            Err(SteamError::BadServiceKey("gg.deals"))
+        );
+    }
+
+    /// Real price APIs with your keys: `ITAD_KEY=... GG_DEALS_KEY=... cargo test -p keykeeper-steam
+    /// live_prices -- --ignored --nocapture`. A missing variable skips that service.
+    #[test]
+    #[ignore = "network"]
+    fn live_prices() {
+        let s = Steam::new(crate::UreqHttp::new());
+        if let Ok(k) = std::env::var("ITAD_KEY") {
+            let p = s.itad_prices(&k, "US", &[400, 1145360]).unwrap();
+            println!("ITAD: {p:#?}");
+            assert!(!p.is_empty() && p.iter().all(|g| !g.deals.is_empty()));
+        }
+        if let Ok(k) = std::env::var("GG_DEALS_KEY") {
+            let p = s.gg_deals_prices(&k, "us", &[400, 1145360]).unwrap();
+            println!("gg.deals: {p:#?}");
+            assert!(p.prices.iter().any(|g| g.retail.is_some()) && p.error.is_none());
+        }
     }
 
     /// Hits the real Steam endpoints. `cargo test -p keykeeper-steam -- --ignored`

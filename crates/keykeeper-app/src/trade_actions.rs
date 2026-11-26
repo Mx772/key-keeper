@@ -212,6 +212,9 @@ impl AppState {
         {
             s.form = Some(crate::form::KeyForm::from_key(k, fmt));
         }
+        if res.added > 0 {
+            self.cart_bump_pending = true;
+        }
         let msg = match (res.added, res.skipped) {
             (0, _) => {
                 "Nothing added — those keys are already traded, redeemed or reserved".to_string()
@@ -220,6 +223,70 @@ impl AppState {
             (n, k) => format!("Added {n} to cart, skipped {k} unavailable"),
         };
         self.toast(msg);
+    }
+
+    /// Mark keys as redeemed on my own account today (they leave the cart if they were in it).
+    /// With `open_steam`, a single Steam key also opens Steam's activation page with it filled in.
+    pub fn redeem_self(&mut self, ids: &[Uuid], open_steam: bool, tx: &mut Tx) {
+        let Some(s) = self.session_mut() else { return };
+        let url = match ids {
+            [id] if open_steam => s.repo.key(*id).and_then(|k| k.steam_register_url()),
+            _ => None,
+        };
+        let done = s.repo.redeem_keys(ids, today());
+        let fmt = s.date_format();
+        if let Some(f) = s.form.as_mut()
+            && let Some(t) = f.target
+            && done.contains(&t)
+            && let Some(k) = s.repo.key(t)
+        {
+            *f = crate::form::KeyForm::from_key(k, fmt);
+        }
+        if s.repo.cart().is_none() {
+            s.trade_form = None;
+        }
+        let name = match done.as_slice() {
+            [one] => s.repo.key(*one).map(|k| k.game_name.clone()),
+            _ => None,
+        };
+        if done.is_empty() {
+            self.toast("Nothing to redeem — those keys are already gone or in a sent trade");
+            return;
+        }
+        if let Some(url) = url {
+            let _ = tx.open_url(&url);
+        }
+        let undo = crate::ui::shortcut("Ctrl+Z");
+        self.toast(match name {
+            Some(n) => format!("Marked {n} as redeemed today — {undo} to undo"),
+            None => format!(
+                "Marked {} keys as redeemed today — {undo} to undo",
+                done.len()
+            ),
+        });
+    }
+
+    pub fn ask_redeem_cart(&mut self) {
+        if let Some(s) = self.session_mut()
+            && s.repo.cart_len() > 0
+        {
+            s.confirm = Some(Confirm::RedeemCart);
+        }
+    }
+
+    pub(crate) fn redeem_cart_now(&mut self) {
+        let Some(s) = self.session_mut() else { return };
+        s.sync_trade_form();
+        let ids = s.repo.cart().map(|c| c.key_ids.clone()).unwrap_or_default();
+        let done = s.repo.redeem_keys(&ids, today());
+        s.trade_form = None;
+        s.refresh_trade_form();
+        let n = done.len();
+        self.toast(format!(
+            "Self-checkout: {n} key{} marked redeemed today — {} to undo",
+            if n == 1 { "" } else { "s" },
+            crate::ui::shortcut("Ctrl+Z")
+        ));
     }
 
     pub fn remove_from_cart(&mut self, id: Uuid) {

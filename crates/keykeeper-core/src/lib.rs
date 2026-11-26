@@ -7,6 +7,7 @@ pub mod export;
 pub mod import;
 pub mod links;
 pub mod model;
+pub mod prices;
 pub mod query;
 pub mod repo;
 pub mod secret;
@@ -21,6 +22,7 @@ pub use model::{
     ApiKeys, DateFormat, GameKey, KeyStatus, LinkOverrides, Ownership, Platform, ReceivedItem,
     Settings, SteamMeta, SteamRating, Trade, TradeSite, TradeStatus,
 };
+pub use prices::{GamePrices, Money, ShopPrice};
 pub use query::{Query, Sort, SortDir, SortField};
 pub use repo::Repo;
 pub use secret::Secret;

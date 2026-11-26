@@ -300,6 +300,21 @@ pub fn view(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
                         .truncate(),
                 )
                 .child(
+                    el().key(format!("cart-redeem-{id}")).child(
+                        Button::new(if key.steam_register_url().is_some() {
+                            "Redeem on Steam"
+                        } else {
+                            "Redeem myself"
+                        })
+                        .variant(ButtonVariant::GhostMuted)
+                        .help("Mark it redeemed today and take it out of the cart")
+                        .on_press_tx(move |s: &mut AppState, tx: &mut Tx| {
+                            s.redeem_self(&[id], true, tx)
+                        })
+                        .build(k),
+                    ),
+                )
+                .child(
                     el().key(format!("cart-remove-{id}")).child(
                         IconButton::new(k.glyph.close)
                             .label(format!("Remove {}", key.game_name))
@@ -330,6 +345,15 @@ pub fn view(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
         .key("cart-actions")
         .w_full()
         .gap(8.0)
+        .child(
+            el().key("cart-self-checkout").child(
+                Button::new("Self-checkout")
+                    .variant(ButtonVariant::GhostMuted)
+                    .help("Keeping them? Mark every cart key redeemed by you today")
+                    .on_press(|s: &mut AppState| s.ask_redeem_cart())
+                    .build(k),
+            ),
+        )
         .child(spacer())
         .child(
             el().key("cart-send").child(

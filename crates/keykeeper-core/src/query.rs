@@ -23,6 +23,8 @@ pub enum SortField {
     StatusDate,
     Deadline,
     Rating,
+    /// Cheapest current store price.
+    Price,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -104,7 +106,7 @@ impl Repo {
             })
             .collect();
         hits.sort_by(|a, b| {
-            compare(a, b, q.sort)
+            compare(self, a, b, q.sort)
                 .then_with(|| a.created_at.cmp(&b.created_at))
                 .then_with(|| a.id.cmp(&b.id))
         });
@@ -122,7 +124,7 @@ fn matches_term(k: &GameKey, lower: &str, norm: &str) -> bool {
         || (norm.len() >= 5 && k.key.normalized().contains(norm))
 }
 
-fn compare(a: &GameKey, b: &GameKey, sort: Sort) -> Ordering {
+fn compare(repo: &Repo, a: &GameKey, b: &GameKey, sort: Sort) -> Ordering {
     let dir = |o: Ordering| {
         if sort.dir == SortDir::Desc {
             o.reverse()
@@ -167,6 +169,10 @@ fn compare(a: &GameKey, b: &GameKey, sort: Sort) -> Ordering {
                     .map(|r| r.percent)
             };
             opt(r(a), r(b), sort.dir, |x, y| x.cmp(&y))
+        }
+        SortField::Price => {
+            let p = |k: &GameKey| repo.key_prices(k).and_then(|p| p.best_cents());
+            opt(p(a), p(b), sort.dir, |x, y| x.cmp(&y))
         }
     }
 }

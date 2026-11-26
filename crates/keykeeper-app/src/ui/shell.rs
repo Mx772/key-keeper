@@ -20,11 +20,13 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .h_full()
         .child(sidebar(s, sess, k))
         .child(col().key("page").grow(1.0).min_w(0.0).h_full().child(page));
+    let detail_open = sess.page == Page::Library && sess.form.is_some();
     if sess.page == Page::Library
         && let Some(form) = &sess.form
     {
         body = body.child(detail::view(sess, form, s.steam_busy(), k, overlays));
     }
+    overlays.extend(cart_bauble(s, sess, detail_open, k));
     confirm_dialog(sess, k, overlays);
     shortcuts::dialog(sess, k, overlays);
     body
@@ -151,6 +153,55 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
         .child(footer)
 }
 
+/// A floating cart button in the corner of the page while the cart has keys (except on the Cart
+/// page itself). It springs up briefly when keys are added.
+fn cart_bauble(s: &AppState, sess: &Session, detail_open: bool, k: &Kit) -> Option<El> {
+    let n = sess.repo.cart_len();
+    if n == 0 || sess.page == Page::Cart {
+        return None;
+    }
+    let right = 28.0 + if detail_open { 400.0 } else { 0.0 };
+    let badge = el()
+        .pin(None, Some(-4.0), Some(-4.0), None)
+        .h(22.0)
+        .min_w(22.0)
+        .px(6.0)
+        .radius(11.0)
+        .center()
+        .fill(k.c.danger.icon)
+        .border(2.0, k.c.page)
+        .child(
+            text(n.to_string())
+                .font(k.ty.text_xsmall_medium)
+                .color(k.c.white)
+                .a11y_hidden(),
+        );
+    Some(
+        el().key("cart-bauble")
+            .role("button")
+            .label(format!("Cart, {n} key{}", if n == 1 { "" } else { "s" }))
+            .focusable(true)
+            .pin(None, None, Some(right), Some(28.0))
+            .size(56.0, 56.0)
+            .radius(28.0)
+            .center()
+            .fill(k.c.bg_accent)
+            .hover(k.c.bg_accent.mix(k.c.white, 0.12))
+            .press(k.c.bg_accent.mix(k.c.black, 0.15))
+            .shadow(4.0, 18.0, k.c.black.alpha(0.35))
+            .scale(if s.cart_bumping() { 1.18 } else { 1.0 })
+            .cursor(rune::Cursor::Pointer)
+            .help("Go to cart")
+            .on_press(|s: &mut AppState| s.go(Page::Cart))
+            .child(
+                rune::icon(&super::CART, 26.0)
+                    .color(k.c.text_contrast)
+                    .a11y_hidden(),
+            )
+            .child(badge),
+    )
+}
+
 /// A quiet sidebar-footer button with its shortcut on the right.
 fn footer_item(k: &Kit, key: &str, label: &str, hint: String) -> El {
     row()
@@ -200,6 +251,12 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
             format!("Export {} without encryption?", if *kind == ExportKind::Csv { "CSV" } else { "JSON" }),
             "The file will contain every key in the current view in plain text. Anyone who can read the file can redeem them.".to_string(),
             "Export",
+            false,
+        ),
+        Confirm::RedeemCart => (
+            format!("Redeem all {} cart keys yourself?", sess.repo.cart_len()),
+            format!("They're marked Redeemed with today's date and leave the cart. Activate each one on Steam with its Redeem button or by pasting it. You can undo with {}.", shortcut("Ctrl+Z")),
+            "Mark all redeemed",
             false,
         ),
         Confirm::CancelTrade(_) => (

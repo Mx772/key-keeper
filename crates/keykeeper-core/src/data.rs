@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::error::VaultError;
+use std::collections::BTreeMap;
+
 use crate::model::{ApiKeys, GameKey, Settings, Trade};
+use crate::prices::GamePrices;
 use crate::template::Templates;
 
 /// Bump when the payload shape changes incompatibly, and add a step to [`migrate`].
@@ -28,6 +31,9 @@ pub struct VaultData {
     /// ([`crate::upgrade`]).
     #[serde(default)]
     pub last_app_version: Option<String>,
+    /// Store prices by Steam app id (a cache; refetched on demand).
+    #[serde(default)]
+    pub prices: BTreeMap<u32, GamePrices>,
 }
 
 impl Default for VaultData {
@@ -40,6 +46,7 @@ impl Default for VaultData {
             api_keys: ApiKeys::default(),
             templates: Templates::default(),
             last_app_version: None,
+            prices: BTreeMap::new(),
         }
     }
 }
