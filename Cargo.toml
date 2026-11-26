@@ -45,3 +45,11 @@ expect_used = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Argon2 at 256 MiB is ~50x slower unoptimised; keep crypto fast in dev/test builds too.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
