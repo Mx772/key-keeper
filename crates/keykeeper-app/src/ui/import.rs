@@ -63,7 +63,8 @@ fn choose(sess: &Session, k: &Kit) -> El {
             .child(
                 TextArea::new(&sess.import.paste)
                     .placeholder("Paste rows from Excel / Sheets, or lines like\nUndertale: UNDR7-TALE0-00001")
-                    .rows(8)
+                    .auto_grow(10, 10) // fixed height: a huge paste scrolls inside instead of pushing Preview off screen
+                    .scroll_bar(true)
                     .width(None)
                     .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.import.paste))
                     .build(k)

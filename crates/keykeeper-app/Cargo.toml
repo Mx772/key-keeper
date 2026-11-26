@@ -26,6 +26,10 @@ zeroize = "1.9.2"
 cargo-packager-updater = "0.2.3"
 semver = "1.0.28"
 
+[target.'cfg(windows)'.dependencies]
+# Reattach to the launching terminal's console (the exe is a GUI-subsystem app).
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+
 [lints]
 workspace = true
 

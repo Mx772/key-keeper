@@ -13,7 +13,7 @@ rust-version = "1.99"
 # RUNE is pre-release and git-only. Every RUNE line below MUST use the same rev; bump them together
 # (and re-check RUNE's own Cargo.toml [patch.crates-io] list when doing so).
 [workspace.dependencies]
-rune = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed50a8dd7d12f77a89b0ec24e2dab00f" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed50a8dd7d12f77a89b0ec24e2dab00f", features = ["native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed50a8dd7d12f77a89b0ec24e2dab00f" }
 rune-theme-opencode = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed50a8dd7d12f77a89b0ec24e2dab00f" }
 
@@ -32,7 +32,7 @@ accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed
 accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "cd7d9a06ed50a8dd7d12f77a89b0ec24e2dab00f" }
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny" # one audited exception: attach_console in keykeeper-app main.rs
 unused_must_use = "deny"
 
 [workspace.lints.clippy]

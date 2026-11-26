@@ -6,6 +6,10 @@
 //!
 //! `keykeeper --self-test` is internal: a headless smoke test for release builds (`selftest.rs`).
 
+// A GUI app on Windows: no console window opens alongside it. When started from a terminal,
+// `attach_console` reconnects stdout/stderr so CLI flags and logs still print there.
+#![windows_subsystem = "windows"]
+
 mod app;
 mod config;
 mod demo;
@@ -141,7 +145,23 @@ fn set_icon() {
 #[cfg(target_os = "macos")]
 fn set_icon() {}
 
+/// Windows: print to the terminal that launched us, if any. Started from Explorer or the Start
+/// menu there is no parent console and this does nothing.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    // SAFETY: plain Win32 call with a constant argument; failure only means "no parent console".
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
 fn main() {
+    attach_console();
     // Internal: the release workflow's smoke test (see `selftest.rs`). Not a user feature.
     if std::env::args().skip(1).any(|a| a == selftest::FLAG) {
         std::process::exit(selftest::run());

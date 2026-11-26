@@ -120,7 +120,8 @@ pub fn details_form(
                 .placeholder(
                     "One game per line, optionally with its key:\nTunic: XXXXX-XXXXX-XXXXX",
                 )
-                .rows(4)
+                .auto_grow(4, 10)
+                .scroll_bar(true)
                 .width(None)
                 .on_edit(|s: &mut AppState| trade_edit(s, |f| &mut f.received))
                 .build(k)
@@ -131,7 +132,8 @@ pub fn details_form(
             k,
             "Notes",
             TextArea::new(&form.notes)
-                .rows(2)
+                .auto_grow(2, 6)
+                .scroll_bar(true)
                 .width(None)
                 .on_edit(|s: &mut AppState| trade_edit(s, |f| &mut f.notes))
                 .build(k)

@@ -266,7 +266,8 @@ pub fn view(sess: &Session, form: &KeyForm, busy: bool, k: &Kit, overlays: &mut 
             k,
             "Notes",
             TextArea::new(&form.notes)
-                .rows(4)
+                .auto_grow(4, 10)
+                .scroll_bar(true)
                 .width(None)
                 .on_edit(|s: &mut AppState| form_edit(s, |f| &mut f.notes))
                 .build(k)

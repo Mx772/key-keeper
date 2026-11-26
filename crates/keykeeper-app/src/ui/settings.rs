@@ -267,7 +267,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             .child(field(
                 k,
                 "Checkout line (one per key)",
-                TextArea::new(&tu.checkout).rows(2).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.checkout)).build(k).key("tpl-checkout"),
+                TextArea::new(&tu.checkout).auto_grow(2, 6).scroll_bar(true).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.checkout)).build(k).key("tpl-checkout"),
                 None,
             ))
             .child(muted(k, "Key: {name} {key} {bundle} {platform} {steam_url} {notes} · Trade: {partner} {partner_url} {trade_url} {site} {date} {count} {games} {received}").wrap())
@@ -275,7 +275,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             .child(field(
                 k,
                 "Reputation post (steamtrades.com)",
-                TextArea::new(&tu.rep).rows(4).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.rep)).build(k).key("tpl-rep"),
+                TextArea::new(&tu.rep).auto_grow(4, 12).scroll_bar(true).width(None).on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.templates_ui.rep)).build(k).key("tpl-rep"),
                 None,
             ))
             .child(muted(k, "Trade variables only — keys can't appear in a public post.").wrap())
