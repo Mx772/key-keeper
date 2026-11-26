@@ -1,7 +1,7 @@
 //! Settings: appearance, dates, security, password, export, updates.
 
 use keykeeper_core::DateFormat;
-use rune::{El, ScrollSpec, Tx, col, el, row, text};
+use rune::{El, Link, LinkPaint, ScrollSpec, Span, Tx, col, el, rich, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, Kit, TextInput};
 
 use super::{card, chip, field, hstack, muted, primary, sess_edit, title_style};
@@ -315,11 +315,28 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .key("steam-api-key"),
             None,
         ))
-        .child(muted(k, "Get one at steamcommunity.com/dev/apikey — any domain name (e.g. localhost) is accepted. It's stored encrypted in your vault.").wrap())
+        .child(api_key_hint(k))
         .child(
             hstack()
-                .child(primary(k, "steam-check", if has_key { "Check wishlist & library" } else { "Check wishlist" }, !busy, |s, _| s.check_ownership()))
-                .child(el().key("steam-save").child(Button::new("Save").variant(ButtonVariant::Outline).on_press(|s: &mut AppState| s.save_steam_settings()).build(k))),
+                .child(primary(
+                    k,
+                    "steam-check",
+                    if has_key {
+                        "Check wishlist & library"
+                    } else {
+                        "Check wishlist"
+                    },
+                    !busy,
+                    |s, _| s.check_ownership(),
+                ))
+                .child(
+                    el().key("steam-save").child(
+                        Button::new("Save")
+                            .variant(ButtonVariant::Outline)
+                            .on_press(|s: &mut AppState| s.save_steam_settings())
+                            .build(k),
+                    ),
+                ),
         );
     if let Some((ok, m)) = &su.status {
         steam_body = steam_body.child(
@@ -374,4 +391,37 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(export)
                 .child(super::update::settings_card(s, k)),
         )
+}
+
+const STEAM_API_KEY_URL: &str = "https://steamcommunity.com/dev/apikey";
+
+/// "Get one at steamcommunity.com/dev/apikey …" with the address as a link that opens the page.
+fn api_key_hint(k: &Kit) -> El {
+    let (before, shown) = ("Get one at ", "steamcommunity.com/dev/apikey");
+    let msg = format!(
+        "{before}{shown} — any domain name (e.g. localhost) is accepted. It's stored encrypted in your vault."
+    );
+    let range = before.len()..before.len() + shown.len();
+    let accent = k.c.text_accent;
+    rich(
+        msg,
+        vec![
+            Span::new(range.start, range.end)
+                .color(accent)
+                .underline(accent.alpha(0.4)),
+        ],
+    )
+    .font(k.ty.text_small)
+    .color(k.c.text_muted)
+    .wrap()
+    .link(
+        Link::new(range, STEAM_API_KEY_URL)
+            .href(STEAM_API_KEY_URL)
+            .hover(LinkPaint::new().underline(accent))
+            .help(STEAM_API_KEY_URL),
+    )
+    .on_link(|_: &mut AppState, url: &str, tx: &mut Tx| {
+        let _ = tx.open_url(url);
+    })
+    .key("steam-api-key-link")
 }

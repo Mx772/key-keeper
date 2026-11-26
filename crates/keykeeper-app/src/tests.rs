@@ -1469,3 +1469,18 @@ fn huge_paste_keeps_preview_reachable() {
     assert_eq!(p.new_count(), 3000);
     assert!(rt.find("import-commit").is_some());
 }
+
+#[test]
+fn steam_api_key_hint_links_to_the_key_page() {
+    let dir = std::env::temp_dir();
+    let mut s = state_for(&dir.join("unused.kkvault"));
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime_sized(s, TALL);
+    click(&mut rt, "nav-settings");
+    rt.take_url_requests();
+    click(&mut rt, "https://steamcommunity.com/dev/apikey");
+    assert_eq!(
+        rt.take_url_requests(),
+        ["https://steamcommunity.com/dev/apikey"]
+    );
+}
