@@ -2,7 +2,7 @@
 //!
 //! `cargo run -p keykeeper-app` opens the app. Screenshots of each screen with demo data:
 //! `cargo run -p keykeeper-app -- --snap target/library.png --scene library --size 1280x800`
-//! (scenes: lock, create, library, detail, new-key, import, settings, trades, empty, light).
+//! (scenes: see `SCENES`).
 
 mod app;
 mod config;
@@ -94,6 +94,10 @@ const SCENES: &[Scene] = &[
     ("templates", |s| {
         demo::unlock(s, demo::sample_data());
         s.go(Page::Settings);
+    }),
+    ("shortcuts", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.show_shortcuts(true);
     }),
     ("empty", |s| {
         demo::unlock(s, keykeeper_core::VaultData::default())

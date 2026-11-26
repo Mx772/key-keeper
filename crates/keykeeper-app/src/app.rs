@@ -174,6 +174,8 @@ pub struct Session {
     pub form: Option<KeyForm>,
     pub confirm: Option<Confirm>,
     pub bulk_status_open: bool,
+    /// The keyboard shortcuts overlay.
+    pub shortcuts_open: bool,
     // other pages
     pub import: ImportUi,
     pub settings_ui: SettingsUi,
@@ -223,6 +225,7 @@ impl Session {
             form: None,
             confirm: None,
             bulk_status_open: false,
+            shortcuts_open: false,
             import: ImportUi::new(date_format),
             settings_ui: SettingsUi::default(),
             trade_form: None,
@@ -794,6 +797,17 @@ impl AppState {
         }
     }
 
+    pub fn show_shortcuts(&mut self, open: bool) {
+        if let Some(s) = self.session_mut() {
+            s.shortcuts_open = open;
+        }
+    }
+
+    fn toggle_shortcuts(&mut self) {
+        let open = self.session().is_some_and(|s| s.shortcuts_open);
+        self.show_shortcuts(!open);
+    }
+
     pub fn cancel_confirm(&mut self) {
         if let Some(s) = self.session_mut() {
             s.confirm = None;
@@ -824,8 +838,9 @@ impl AppState {
                     s.form = None;
                 }
                 self.toast(format!(
-                    "Deleted {n} key{} — Ctrl+Z to undo",
-                    if n == 1 { "" } else { "s" }
+                    "Deleted {n} key{} — {} to undo",
+                    if n == 1 { "" } else { "s" },
+                    crate::ui::shortcut("Ctrl+Z"),
                 ));
             }
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
@@ -1205,8 +1220,16 @@ impl AppState {
                     self.copy_name_keys(&ids, tx);
                     true
                 }
+                '/' => {
+                    self.toggle_shortcuts();
+                    true
+                }
                 _ => false,
             },
+            rune::Key::Function(1) => {
+                self.toggle_shortcuts();
+                true
+            }
             rune::Key::Delete => {
                 let ids = self
                     .session()
@@ -1223,7 +1246,11 @@ impl AppState {
                 let Some(s) = self.session_mut() else {
                     return false;
                 };
-                if s.confirm.take().is_some() || s.bulk_status_open || s.form.take().is_some() {
+                if std::mem::take(&mut s.shortcuts_open)
+                    || s.confirm.take().is_some()
+                    || s.bulk_status_open
+                    || s.form.take().is_some()
+                {
                     s.bulk_status_open = false;
                     return true;
                 }

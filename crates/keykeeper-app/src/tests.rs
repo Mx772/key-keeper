@@ -316,6 +316,55 @@ fn escape_closes_editor_and_delete_key_asks_first() {
     );
 }
 
+#[test]
+fn shortcuts_overlay_opens_from_keys_and_sidebar_and_esc_closes_it() {
+    let mut rt = demo_rt();
+    assert!(rt.find("shortcut-list").is_none());
+    let open = |rt: &Runtime<AppState>| rt.state.session().unwrap().shortcuts_open;
+
+    rt.key(KeyEvent {
+        key: Key::Function(1),
+        mods: Mods::default(),
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(open(&rt), "F1 opens the overlay");
+    assert!(rt.find("shortcut-list").is_some());
+    assert!(
+        rt.find(&format!("shortcut-{}", ui::SHORTCUT_COUNT - 1))
+            .is_some()
+    );
+
+    rt.key(KeyEvent {
+        key: Key::Escape,
+        mods: Mods::default(),
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(!open(&rt), "Esc closes it");
+    assert!(rt.find("shortcut-list").is_none());
+
+    rt.key(ctrl('/'));
+    rt.frame(1.0 / 60.0);
+    assert!(open(&rt), "Ctrl+/ opens it");
+    rt.key(ctrl('/'));
+    rt.frame(1.0 / 60.0);
+    assert!(!open(&rt), "and toggles it shut");
+
+    click(&mut rt, "nav-shortcuts");
+    assert!(open(&rt), "the sidebar entry opens it");
+    assert!(rt.find("shortcut-list").is_some());
+
+    // Esc with the overlay over an open editor closes only the overlay.
+    rt.update(|s, _| s.new_key());
+    rt.frame(1.0 / 60.0);
+    rt.key(KeyEvent {
+        key: Key::Escape,
+        mods: Mods::default(),
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(!open(&rt));
+    assert!(rt.state.session().unwrap().form.is_some());
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────────────────────
 
 #[test]

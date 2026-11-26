@@ -221,7 +221,7 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
             el().key("bulk-copy").child(
                 Button::new("Copy \"Name: Key\"")
                     .variant(ButtonVariant::Neutral)
-                    .shortcut("Ctrl+Shift+C")
+                    .shortcut(super::shortcut("Ctrl+Shift+C"))
                     .on_press_tx(|s: &mut AppState, tx: &mut Tx| {
                         let ids = s.session().map(Session::selected_ids).unwrap_or_default();
                         s.copy_name_keys(&ids, tx);

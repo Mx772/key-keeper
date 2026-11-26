@@ -48,7 +48,7 @@ Every screen can be rendered headless with throwaway demo data, which never touc
 
 ```sh
 cargo run -p keykeeper-app -- --snap library.png --scene library --size 1280x800
-# scenes: lock create library detail new-key import import-start cart trades settings templates empty light
+# scenes: lock create library detail new-key import import-start cart trades settings templates shortcuts empty light
 ```
 
 ## Steam Web API key (optional)

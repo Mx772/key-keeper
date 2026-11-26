@@ -8,7 +8,12 @@ mod library;
 mod lock;
 mod settings;
 mod shell;
+mod shortcuts;
 mod trades;
+
+pub use shortcuts::shortcut;
+#[cfg(test)]
+pub const SHORTCUT_COUNT: usize = shortcuts::SHORTCUTS.len();
 
 use rune::{Color, Cx, El, TextEdit, TextStyle, col, el, row, text};
 use rune_kit::{Kit, TableState};

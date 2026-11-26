@@ -3,7 +3,7 @@
 use rune::{El, Tx, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Dialog, Kit, Toast};
 
-use super::{cart, detail, import, library, settings, trades};
+use super::{cart, detail, import, library, settings, shortcut, shortcuts, trades};
 use crate::app::{AppState, Confirm, ExportKind, Page, Session};
 
 pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
@@ -26,6 +26,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         body = body.child(detail::view(sess, form, s.steam_busy(), k, overlays));
     }
     confirm_dialog(sess, k, overlays);
+    shortcuts::dialog(sess, k, overlays);
     body
 }
 
@@ -104,31 +105,12 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
         .gap(10.0)
         .child(el().h(1.0).w_full().fill(k.c.border_weak))
         .child(
-            row()
-                .key("nav-lock")
-                .role("button")
-                .label("Lock (Ctrl+L)")
-                .focusable(true)
-                .w_full()
-                .h(36.0)
-                .px(14.0)
-                .center_y()
-                .radius(10.0)
-                .hover(k.c.surface_hover)
-                .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.lock(tx))
-                .child(
-                    text("Lock")
-                        .font(k.ty.ui_medium)
-                        .color(k.c.text_muted)
-                        .grow(1.0)
-                        .a11y_hidden(),
-                )
-                .child(
-                    text("Ctrl+L")
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint)
-                        .a11y_hidden(),
-                ),
+            footer_item(k, "nav-shortcuts", "Keyboard shortcuts", "F1".into())
+                .on_press(|s: &mut AppState| s.show_shortcuts(true)),
+        )
+        .child(
+            footer_item(k, "nav-lock", "Lock", shortcut("Ctrl+L"))
+                .on_press_tx(|s: &mut AppState, tx: &mut Tx| s.lock(tx)),
         )
         .child(
             row()
@@ -169,6 +151,34 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
         .child(footer)
 }
 
+/// A quiet sidebar-footer button with its shortcut on the right.
+fn footer_item(k: &Kit, key: &str, label: &str, hint: String) -> El {
+    row()
+        .key(key.to_string())
+        .role("button")
+        .label(format!("{label} ({hint})"))
+        .focusable(true)
+        .w_full()
+        .h(32.0)
+        .px(14.0)
+        .center_y()
+        .radius(10.0)
+        .hover(k.c.surface_hover)
+        .child(
+            text(label.to_string())
+                .font(k.ty.ui_medium)
+                .color(k.c.text_muted)
+                .grow(1.0)
+                .a11y_hidden(),
+        )
+        .child(
+            text(hint)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .a11y_hidden(),
+        )
+}
+
 fn save_status(s: &Session) -> String {
     match (&s.save_error, s.is_dirty()) {
         (Some(_), _) => "Save failed".into(),
@@ -182,7 +192,7 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
     let (title, desc, action, danger) = match c {
         Confirm::DeleteKeys(ids) => (
             if ids.len() == 1 { "Delete this key?".to_string() } else { format!("Delete {} keys?", ids.len()) },
-            "They're removed from the vault. You can undo with Ctrl+Z until you lock.".to_string(),
+            format!("They're removed from the vault. You can undo with {} until you lock.", shortcut("Ctrl+Z")),
             "Delete",
             true,
         ),
@@ -194,7 +204,7 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
         ),
         Confirm::CancelTrade(_) => (
             "Cancel this trade?".to_string(),
-            "Its keys go back to the status they had before you added them to the cart. You can undo with Ctrl+Z.".to_string(),
+            format!("Its keys go back to the status they had before you added them to the cart. You can undo with {}.", shortcut("Ctrl+Z")),
             "Cancel trade",
             true,
         ),
