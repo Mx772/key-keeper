@@ -1,12 +1,11 @@
 //! Store prices in the app: fetch from IsThereAnyDeal and/or gg.deals (whichever has a key) on the
 //! shared background job, and merge the results into the vault's price cache.
 
-use std::sync::atomic::Ordering;
-
 use jiff::{SignedDuration, Timestamp};
 use keykeeper_core::prices::{gg_deals_region, normalize_country};
 use keykeeper_core::{GamePrices, Money, Secret, ShopPrice};
-use keykeeper_steam::{GgBatch, ItadPrices, Price, SteamError};
+use keykeeper_steam::{GgBatch, ItadBatch, Price, Progress, SteamError};
+use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::steam_actions::JobDone;
@@ -17,7 +16,7 @@ pub const PRICE_MAX_AGE_HOURS: i64 = 12;
 pub struct PricesDone {
     pub country: String,
     pub apps: Vec<u32>,
-    pub itad: Option<Result<Vec<ItadPrices>, SteamError>>,
+    pub itad: Option<Result<ItadBatch, SteamError>>,
     pub gg: Option<Result<GgBatch, SteamError>>,
 }
 
@@ -50,8 +49,66 @@ impl AppState {
         }
     }
 
+    /// Refresh ratings and (with a price API key) prices for just the keys in `ids`, ignoring
+    /// the caches: the library's right-click "Refresh prices & ratings".
+    pub fn refresh_selected(&mut self, ids: &[Uuid]) {
+        let _ = self.save_price_settings();
+        let Some(s) = self.session() else { return };
+        let mut apps: Vec<u32> = s
+            .repo
+            .keys()
+            .iter()
+            .filter(|k| ids.contains(&k.id))
+            .filter_map(|k| k.steam_app_id)
+            .collect();
+        apps.sort_unstable();
+        apps.dedup();
+        if apps.is_empty() {
+            self.toast("None of these keys has a Steam app id yet — use Match on Steam first");
+            return;
+        }
+        let api_keys = s.repo.api_keys();
+        let itad = api_keys.itad.as_ref().map(|k| k.expose().to_string());
+        let gg = api_keys.gg_deals.as_ref().map(|k| k.expose().to_string());
+        let country = s.settings().price_country.clone();
+        let label = if apps.len() == 1 {
+            "Refreshing game"
+        } else {
+            "Refreshing games"
+        };
+        self.spawn_job(label, apps.len(), move |api, n| {
+            n.note("Steam ratings");
+            let ratings = JobDone::Ratings {
+                result: api.reviews(&apps, n),
+            };
+            if itad.is_none() && gg.is_none() {
+                return ratings;
+            }
+            n.restart();
+            let itad = itad.map(|k| api.itad_prices(&k, &country, &apps, n));
+            if gg.is_some() {
+                n.restart();
+            }
+            let gg = gg.map(|k| api.gg_deals_prices(&k, gg_deals_region(&country), &apps, n));
+            JobDone::Many(vec![
+                ratings,
+                JobDone::Prices(PricesDone {
+                    country,
+                    apps,
+                    itad,
+                    gg,
+                }),
+            ])
+        });
+    }
+
     /// Fetch prices for keys with a Steam app id. `force` ignores the cache.
     pub fn refresh_prices(&mut self, force: bool) {
+        self.refresh_prices_for(&[], force);
+    }
+
+    /// Fetch prices for the keys in `ids` (every key when empty). `force` ignores the cache.
+    pub fn refresh_prices_for(&mut self, ids: &[Uuid], force: bool) {
         if let Some(err) = self.save_price_settings() {
             if let Some(s) = self.session_mut() {
                 s.steam_ui.prices_status = Some((false, err.clone()));
@@ -77,6 +134,7 @@ impl AppState {
             .repo
             .keys()
             .iter()
+            .filter(|k| ids.is_empty() || ids.contains(&k.id))
             .filter_map(|k| k.steam_app_id)
             .filter(|a| {
                 force
@@ -96,10 +154,16 @@ impl AppState {
             return;
         }
         let total = apps.len();
+        if let Some(s) = self.session_mut() {
+            s.steam_ui.prices_status = None;
+        }
         self.spawn_job("Fetching prices", total, move |api, n| {
-            let itad = itad.map(|k| api.itad_prices(&k, &country, &apps));
-            let gg = gg.map(|k| api.gg_deals_prices(&k, gg_deals_region(&country), &apps));
-            n.store(total, Ordering::Relaxed);
+            let itad = itad.map(|k| api.itad_prices(&k, &country, &apps, n));
+            if gg.is_some() {
+                // Count again for gg.deals: the status bar shows one service at a time.
+                n.restart();
+            }
+            let gg = gg.map(|k| api.gg_deals_prices(&k, gg_deals_region(&country), &apps, n));
             JobDone::Prices(PricesDone {
                 country,
                 apps,
@@ -113,7 +177,16 @@ impl AppState {
         let Some(s) = self.session_mut() else { return };
         let now = Timestamp::now();
         let (itad, itad_err) = match done.itad {
-            Some(Ok(v)) => (Some(v), None),
+            Some(Ok(b)) => {
+                let note = b.error.as_ref().map(|e| {
+                    format!(
+                        "IsThereAnyDeal stopped after {} of {} games ({e}); refresh later for the rest",
+                        b.seen.len(),
+                        done.apps.len()
+                    )
+                });
+                (Some(b), note)
+            }
             Some(Err(e)) => (None, Some(format!("IsThereAnyDeal: {e}"))),
             None => (None, None),
         };
@@ -139,8 +212,8 @@ impl AppState {
                 let old = s.repo.prices(*app).filter(|p| p.country == done.country);
                 let mut p = GamePrices::empty(done.country.clone(), now);
                 match &itad {
-                    Some(list) => {
-                        if let Some(i) = list.iter().find(|i| i.app_id == *app) {
+                    Some(b) if b.seen.contains(app) => {
+                        if let Some(i) = b.prices.iter().find(|i| i.app_id == *app) {
                             p.shops = i
                                 .deals
                                 .iter()
@@ -156,7 +229,12 @@ impl AppState {
                             p.history_low = i.history_low.as_ref().map(money);
                         }
                     }
-                    None => {
+                    _ => {
+                        // Not reached (or ITAD failed): keep the old prices, and when ITAD ran
+                        // but stopped early, leave the game due for a refetch.
+                        if itad.is_some() {
+                            p.fetched_at = old.map_or(Timestamp::UNIX_EPOCH, |o| o.fetched_at);
+                        }
                         if let Some(o) = old {
                             p.shops = o.shops.clone();
                             p.history_low = o.history_low.clone();
@@ -175,7 +253,8 @@ impl AppState {
                         // Not reached this time (or gg.deals failed): keep the old prices, and
                         // when gg.deals ran but stopped early, leave the game due for a refetch.
                         if gg.is_some() {
-                            p.fetched_at = old.map_or(Timestamp::UNIX_EPOCH, |o| o.fetched_at);
+                            let was = old.map_or(Timestamp::UNIX_EPOCH, |o| o.fetched_at);
+                            p.fetched_at = p.fetched_at.min(was);
                         }
                         if let Some(o) = old {
                             p.retail_low = o.retail_low.clone();
@@ -198,6 +277,14 @@ impl AppState {
             done.country
         );
         let errors: Vec<String> = [itad_err, gg_err].into_iter().flatten().collect();
+        log::info!(
+            "{msg}{}",
+            if errors.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", errors.join("; "))
+            }
+        );
         s.steam_ui.prices_status = Some((errors.is_empty(), {
             let mut m = msg.clone();
             for e in &errors {

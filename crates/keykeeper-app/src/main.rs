@@ -18,6 +18,7 @@ mod form;
 mod info;
 mod layout;
 mod library_actions;
+mod logging;
 mod price_actions;
 mod selftest;
 mod steam_actions;
@@ -103,6 +104,10 @@ const SCENES: &[Scene] = &[
             x.bulk = Some(bulk::BulkForm::new(ids));
         }
         s.with_bulk(|b| b.add_tags = rune::TextEdit::new("humble-2026"));
+    }),
+    ("match-review", |s| {
+        demo::unlock(s, demo::sample_data());
+        demo::match_review(s);
     }),
     ("grouped", |s| {
         demo::unlock(s, demo::sample_data());
@@ -226,7 +231,7 @@ const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
 #[cfg(not(target_os = "macos"))]
 fn set_icon() {
     if let Err(e) = rune::set_app_icon(ICON_PNG) {
-        eprintln!("keykeeper: app icon: {e}");
+        log::warn!("app icon: {e}");
     }
 }
 
@@ -254,6 +259,7 @@ fn main() {
     if std::env::args().skip(1).any(|a| a == selftest::FLAG) {
         std::process::exit(selftest::run());
     }
+    logging::init(config::Config::log_dir());
     set_icon();
     let cfg = config::Config::default_path()
         .map(|p| config::Config::load(&p))

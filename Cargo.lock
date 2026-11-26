@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64 0.22.1",
  "cargo-packager-updater",
@@ -1971,6 +1971,7 @@ dependencies = [
  "jiff",
  "keykeeper-core",
  "keykeeper-steam",
+ "log",
  "minisign-verify",
  "rune",
  "rune-kit",
@@ -1987,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "argon2",
  "blake2",
@@ -2008,8 +2009,9 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-steam"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
+ "log",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

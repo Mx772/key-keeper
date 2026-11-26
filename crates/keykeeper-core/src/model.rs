@@ -172,6 +172,10 @@ pub struct GameKey {
     pub links: LinkOverrides,
     #[serde(default)]
     pub steam: Option<SteamMeta>,
+    /// When "Match on Steam" last searched for this key without finding an exact match. A
+    /// library-wide match skips such keys for a while instead of searching again each time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam_searched_at: Option<Timestamp>,
     #[serde(default)]
     pub trade_id: Option<Uuid>,
     /// When the status last meaningfully changed (traded / redeemed). The CSV "Redeem/Trade Date".
@@ -202,6 +206,7 @@ impl GameKey {
             steam_app_id: None,
             links: LinkOverrides::default(),
             steam: None,
+            steam_searched_at: None,
             trade_id: None,
             status_date: None,
             redemption_deadline: None,

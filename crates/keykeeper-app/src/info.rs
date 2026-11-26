@@ -39,7 +39,7 @@ enum Req {
 pub enum Done {
     Details {
         asked: Vec<u32>,
-        result: Result<Vec<(StoreDetails, Vec<String>)>, SteamError>,
+        result: Result<keykeeper_steam::Partial<(StoreDetails, Vec<String>)>, SteamError>,
     },
     Art {
         app_id: u32,
@@ -329,7 +329,16 @@ impl AppState {
                     match result {
                         Ok(found) => {
                             let now = Timestamp::now();
+                            if found.error.is_some() {
+                                // Stopped early: let a later hover ask for the ones not reached.
+                                for a in &asked {
+                                    if !found.items.iter().any(|(d, _)| d.app_id == *a) {
+                                        self.info.asked.remove(a);
+                                    }
+                                }
+                            }
                             let info: Vec<(u32, AppInfo)> = found
+                                .items
                                 .into_iter()
                                 .map(|(d, tags)| (d.app_id, to_app_info(&d, tags, now)))
                                 .collect();
@@ -337,7 +346,8 @@ impl AppState {
                                 s.repo.set_app_info(info);
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
+                            log::warn!("store details for {} apps: {e}", asked.len());
                             // Quiet: let a later hover try again (art uses the default URL now).
                             for a in asked {
                                 self.info.asked.remove(&a);

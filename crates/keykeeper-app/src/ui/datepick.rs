@@ -1,4 +1,5 @@
-//! A small month calendar for the editor's date fields. Typing a date still works.
+//! A small month calendar for date fields (the key editor's and a trade's). Typing a date
+//! still works.
 
 use jiff::ToSpan;
 use jiff::civil::Date;
@@ -7,8 +8,8 @@ use keykeeper_core::import::values::parse_date;
 use rune::{El, TextEdit, col, el, row, text};
 use rune_kit::{IconButton, Kit, Placement, Popover};
 
-use crate::app::{AppState, today};
-use crate::form::{KeyForm, format_date};
+use crate::app::{AppState, Session, today};
+use crate::form::format_date;
 
 pub static CALENDAR: rune::Icon = rune::Icon {
     name: "kk-calendar",
@@ -35,12 +36,32 @@ pub struct DatePick {
     pub month: Date,
 }
 
-fn edit_for<'a>(f: &'a mut KeyForm, field: &str) -> Option<&'a mut TextEdit> {
+/// The field a trade's date lives in.
+pub const TRADE_DATE: &str = "trade_date";
+
+/// `field`'s calendar state and text, in whichever form holds it.
+fn slot<'a>(
+    s: &'a mut Session,
+    field: &str,
+) -> Option<(&'a mut Option<DatePick>, &'a mut TextEdit)> {
+    if field == TRADE_DATE {
+        let f = s.trade_form.as_mut()?;
+        return Some((&mut f.date_pick, &mut f.date));
+    }
+    let f = s.form.as_mut()?;
     match field {
-        "deadline" => Some(&mut f.deadline),
-        "status_date" => Some(&mut f.status_date),
+        "deadline" => Some((&mut f.date_pick, &mut f.deadline)),
+        "status_date" => Some((&mut f.date_pick, &mut f.status_date)),
         _ => None,
     }
+}
+
+/// The open calendar, in whichever form it is.
+fn open_pick(s: &mut Session) -> Option<&mut Option<DatePick>> {
+    if s.trade_form.as_ref().is_some_and(|f| f.date_pick.is_some()) {
+        return s.trade_form.as_mut().map(|f| &mut f.date_pick);
+    }
+    s.form.as_mut().map(|f| &mut f.date_pick)
 }
 
 fn first_of_month(d: Date) -> Date {
@@ -51,31 +72,34 @@ impl AppState {
     pub fn toggle_date_pick(&mut self, field: &'static str) {
         let Some(s) = self.session_mut() else { return };
         let fmt = s.date_format();
-        let Some(f) = s.form.as_mut() else { return };
-        if f.date_pick.is_some_and(|p| p.field == field) {
-            f.date_pick = None;
+        let Some((pick, edit)) = slot(s, field) else {
+            return;
+        };
+        if pick.is_some_and(|p| p.field == field) {
+            *pick = None;
             return;
         }
-        let current = edit_for(f, field)
-            .and_then(|e| parse_date(&e.text, fmt).ok().flatten())
+        let current = parse_date(&edit.text, fmt)
+            .ok()
+            .flatten()
             .unwrap_or_else(today);
-        f.date_pick = Some(DatePick {
+        *pick = Some(DatePick {
             field,
             month: first_of_month(current),
         });
     }
 
     pub fn close_date_pick(&mut self) {
-        if let Some(f) = self.session_mut().and_then(|s| s.form.as_mut()) {
-            f.date_pick = None;
+        if let Some(p) = self.session_mut().and_then(open_pick) {
+            *p = None;
         }
     }
 
     pub fn date_pick_month(&mut self, months: i32) {
         if let Some(p) = self
             .session_mut()
-            .and_then(|s| s.form.as_mut())
-            .and_then(|f| f.date_pick.as_mut())
+            .and_then(open_pick)
+            .and_then(|p| p.as_mut())
             && let Ok(m) = p.month.checked_add(months.months())
         {
             p.month = first_of_month(m);
@@ -86,25 +110,31 @@ impl AppState {
     pub fn pick_date(&mut self, date: Option<Date>) {
         let Some(s) = self.session_mut() else { return };
         let fmt = s.date_format();
-        let Some(f) = s.form.as_mut() else { return };
-        let Some(p) = f.date_pick.take() else { return };
-        if let Some(e) = edit_for(f, p.field) {
+        let Some(p) = open_pick(s).and_then(|p| p.take()) else {
+            return;
+        };
+        if let Some((_, e)) = slot(s, p.field) {
             e.replace_text(format_date(date, fmt));
+        }
+        if p.field == TRADE_DATE {
+            s.sync_trade_form();
         }
     }
 }
 
 const WEEKDAYS: [&str; 7] = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
-/// The calendar button for `field`, with its popover when open.
+/// The calendar button for `field` (whose text is `value`), with its popover when `pick` is
+/// open on it.
 pub fn button(
     k: &Kit,
-    form: &KeyForm,
+    pick: Option<DatePick>,
+    value: &TextEdit,
     field: &'static str,
     fmt: DateFormat,
     overlays: &mut Vec<El>,
 ) -> El {
-    let open = form.date_pick.filter(|p| p.field == field);
+    let open = pick.filter(|p| p.field == field);
     let trigger = el().key(format!("pick-{field}")).child(
         IconButton::new(&CALENDAR)
             .label("Pick a date")
@@ -118,10 +148,7 @@ pub fn button(
         .placement(Placement::BottomEnd)
         .on_close(|s: &mut AppState| s.close_date_pick());
     if let Some(p) = open {
-        let selected = match field {
-            "deadline" => parse_date(&form.deadline.text, fmt).ok().flatten(),
-            _ => parse_date(&form.status_date.text, fmt).ok().flatten(),
-        };
+        let selected = parse_date(&value.text, fmt).ok().flatten();
         pop = pop.child(calendar(k, p.month, selected));
     }
     pop.build(k, overlays)

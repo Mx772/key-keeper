@@ -59,6 +59,15 @@ pub struct GgBatch {
     pub error: Option<SteamError>,
 }
 
+/// What an IsThereAnyDeal fetch got. `seen` lists every app it finished (priced, or unknown to
+/// ITAD), so apps it never reached can be retried later; `error` says why it stopped early.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ItadBatch {
+    pub prices: Vec<ItadPrices>,
+    pub seen: Vec<u32>,
+    pub error: Option<SteamError>,
+}
+
 /// A gg.deals error response (any status) as an error with their message.
 pub fn gg_deals_error(status: u16, body: &str) -> SteamError {
     let msg = serde_json::from_str::<Value>(body).ok().and_then(|v| {

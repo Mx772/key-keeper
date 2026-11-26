@@ -182,6 +182,8 @@ impl AppState {
     /// Save unsaved changes (the same path as locking). The vault must be on disk before an
     /// installer replaces the app.
     fn flush_for_update(&mut self) -> Result<(), String> {
+        // The installer ends this process without the usual close, so save the layout too.
+        self.flush_config();
         if let Screen::Unlocked(s) = &mut self.screen {
             s.sync_trade_form();
             if s.is_dirty() && s.save().is_err() {
@@ -286,7 +288,7 @@ impl AppState {
                     };
                 } else {
                     // Automatic checks fail quietly; the next one is in a day.
-                    eprintln!("keykeeper: update check: {e}");
+                    log::warn!("automatic update check failed: {e}");
                 }
             }
         }

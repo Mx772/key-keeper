@@ -799,7 +799,7 @@ fn trade_details_survive_navigation_and_lock() {
 
 // ── Steam ────────────────────────────────────────────────────────────────────────────────────
 
-use keykeeper_steam::{AppMatch, Review, SteamApi, SteamError};
+use keykeeper_steam::{AppMatch, Partial, Progress, Review, SteamApi, SteamError};
 
 /// Canned Steam responses.
 struct FakeSteam;
@@ -831,16 +831,19 @@ impl SteamApi for FakeSteam {
             _ => Vec::new(),
         })
     }
-    fn reviews(&self, app_ids: &[u32]) -> Result<Vec<Review>, SteamError> {
-        Ok(app_ids
-            .iter()
-            .map(|&app_id| Review {
-                app_id,
-                desc: "Very Positive".into(),
-                percent: 88,
-                total: 1234,
-            })
-            .collect())
+    fn reviews(&self, app_ids: &[u32], _: &dyn Progress) -> Result<Partial<Review>, SteamError> {
+        Ok(Partial {
+            items: app_ids
+                .iter()
+                .map(|&app_id| Review {
+                    app_id,
+                    desc: "Very Positive".into(),
+                    percent: 88,
+                    total: 1234,
+                })
+                .collect(),
+            error: None,
+        })
     }
     fn resolve_profile(&self, input: &str) -> Result<u64, SteamError> {
         if input.contains("nobody") {
@@ -973,15 +976,32 @@ fn bulk_match_then_filter_unmatched() {
         rt.state
             .toasts
             .iter()
-            .any(|t| t.title.starts_with("Matched 1 key, 2 need a manual pick")),
+            .any(|t| t.title.starts_with("Matched 1 key, 2 to pick by hand")),
         "{:?}",
         rt.state.toasts
     );
+    // The two without an exact match wait in the review, Doom with Steam's candidates.
+    let review = rt.state.session().unwrap().match_review.as_ref().unwrap();
+    assert_eq!(review.rows.len(), 2);
+    let doom = review.rows.iter().position(|r| r.name == "Doom").unwrap();
+    assert_eq!(review.rows[doom].matches.len(), 2);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("match-review").is_some() || rt.find(&format!("review-row-{doom}")).is_some());
+    // Searched without a match: a library-wide match skips them next time.
+    assert!(key_named(&rt, "Doom").steam_searched_at.is_some());
+    rt.update(|s, _| s.review_choose(doom, "2280"));
+    rt.update(|s, _| s.apply_review());
+    wait_for_steam(&mut rt);
+    assert_eq!(key_named(&rt, "Doom").steam_app_id, Some(2280));
+    assert!(rt.state.session().unwrap().match_review.is_none());
+    rt.update(|s, _| s.match_missing(&[]));
+    assert!(
+        rt.state.job.is_none(),
+        "Unknown Indie was searched recently: skipped"
+    );
     click(&mut rt, "filter-no-steam");
     poll(&mut rt, 0.0);
-    let mut names = shown(&rt);
-    names.sort();
-    assert_eq!(names, ["Doom", "Unknown Indie"]);
+    assert_eq!(shown(&rt), ["Unknown Indie"]);
     // Ratings were fetched for the matched key.
     assert!(
         key_named(&rt, "Animal Well")
@@ -989,10 +1009,11 @@ fn bulk_match_then_filter_unmatched() {
             .as_ref()
             .is_some_and(|m| m.rating.is_some())
     );
-    // One undo step per batch (ratings, then the match).
+    // One undo step per batch: ratings and the pick, ratings and the match.
     rt.update(|s, _| {
-        s.undo();
-        s.undo();
+        for _ in 0..4 {
+            s.undo();
+        }
     });
     assert_eq!(key_named(&rt, "Animal Well").steam_app_id, None);
 }
@@ -1692,8 +1713,8 @@ impl SteamApi for PricedSteam {
     fn search(&self, t: &str) -> Result<Vec<AppMatch>, SteamError> {
         FakeSteam.search(t)
     }
-    fn reviews(&self, a: &[u32]) -> Result<Vec<Review>, SteamError> {
-        FakeSteam.reviews(a)
+    fn reviews(&self, a: &[u32], p: &dyn Progress) -> Result<Partial<Review>, SteamError> {
+        FakeSteam.reviews(a, p)
     }
     fn resolve_profile(&self, i: &str) -> Result<u64, SteamError> {
         FakeSteam.resolve_profile(i)
@@ -1709,13 +1730,14 @@ impl SteamApi for PricedSteam {
         key: &str,
         country: &str,
         apps: &[u32],
-    ) -> Result<Vec<keykeeper_steam::ItadPrices>, SteamError> {
+        _: &dyn Progress,
+    ) -> Result<keykeeper_steam::ItadBatch, SteamError> {
         assert_eq!((key, country), ("itad-key", "GB"));
         let p = |c: u64| keykeeper_steam::Price {
             cents: c,
             currency: "GBP".into(),
         };
-        Ok(apps
+        let prices = apps
             .iter()
             .map(|&app_id| keykeeper_steam::ItadPrices {
                 app_id,
@@ -1737,13 +1759,19 @@ impl SteamApi for PricedSteam {
                 ],
                 history_low: Some(p(499)),
             })
-            .collect())
+            .collect();
+        Ok(keykeeper_steam::ItadBatch {
+            prices,
+            seen: apps.to_vec(),
+            error: None,
+        })
     }
     fn gg_deals_prices(
         &self,
         _: &str,
         region: &str,
         _: &[u32],
+        _: &dyn Progress,
     ) -> Result<keykeeper_steam::GgBatch, SteamError> {
         assert_eq!(region, "gb");
         Err(SteamError::BadServiceKey("gg.deals"))
@@ -1830,8 +1858,8 @@ impl SteamApi for InfoSteam {
     fn search(&self, t: &str) -> Result<Vec<AppMatch>, SteamError> {
         FakeSteam.search(t)
     }
-    fn reviews(&self, a: &[u32]) -> Result<Vec<Review>, SteamError> {
-        FakeSteam.reviews(a)
+    fn reviews(&self, a: &[u32], p: &dyn Progress) -> Result<Partial<Review>, SteamError> {
+        FakeSteam.reviews(a, p)
     }
     fn resolve_profile(&self, i: &str) -> Result<u64, SteamError> {
         FakeSteam.resolve_profile(i)
@@ -1845,8 +1873,8 @@ impl SteamApi for InfoSteam {
     fn store_details(
         &self,
         app_ids: &[u32],
-    ) -> Result<Vec<(keykeeper_steam::StoreDetails, Vec<String>)>, SteamError> {
-        Ok(app_ids
+    ) -> Result<Partial<(keykeeper_steam::StoreDetails, Vec<String>)>, SteamError> {
+        let items = app_ids
             .iter()
             .map(|&app_id| {
                 (
@@ -1866,7 +1894,8 @@ impl SteamApi for InfoSteam {
                     vec!["Metroidvania".to_string()],
                 )
             })
-            .collect())
+            .collect();
+        Ok(Partial { items, error: None })
     }
     fn download_image(&self, url: &str) -> Result<Vec<u8>, SteamError> {
         self.downloads.lock().unwrap().push(url.to_string());
@@ -2452,7 +2481,11 @@ fn column_menu_hides_columns_and_the_layout_survives_a_lock() {
     let saved = Config::load(&cfg);
     assert_eq!(
         saved.library.hidden_columns,
-        vec!["platform".to_string(), "added".to_string()]
+        vec![
+            "source".to_string(),
+            "platform".to_string(),
+            "added".to_string()
+        ]
     );
     assert_eq!(saved.library.sort.as_deref(), Some("name:asc"));
     assert!(saved.library.group_by_bundle);
@@ -2655,4 +2688,181 @@ fn no_matches_offers_to_clear_filters_and_delete_offers_undo() {
     rt.update(|s, _| s.undo_from_toast(tid));
     assert!(rt.state.session().unwrap().repo.key(id).is_some(), "undone");
     assert!(rt.state.toasts.iter().all(|t| t.id != tid));
+}
+
+#[test]
+fn a_trades_date_can_be_picked_and_dates_its_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state_for(&dir.path().join("unused.kkvault"));
+    demo::unlock(&mut s, demo::sample_data());
+    let id = s
+        .session()
+        .unwrap()
+        .repo
+        .trades()
+        .iter()
+        .find(|t| t.status == keykeeper_core::TradeStatus::Completed)
+        .unwrap()
+        .id;
+    s.select_trade(id);
+    let mut rt = runtime_sized(s, TALL);
+    rt.frame(1.0 / 60.0);
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .trade_form
+            .as_ref()
+            .unwrap()
+            .date
+            .text,
+        "1/7/2026"
+    );
+    // Type a new date; it lands when the form syncs (leaving the trade).
+    rt.update(|s, _| {
+        let f = s.session_mut().unwrap().trade_form.as_mut().unwrap();
+        f.date = TextEdit::new("3/9/2025");
+    });
+    rt.update(|s, _| s.go(Page::Library));
+    let x = rt.state.session().unwrap();
+    let t = x.repo.trade(id).unwrap();
+    let day = jiff::civil::date(2025, 3, 9);
+    assert_eq!(
+        keykeeper_core::trade::trade_day(t, &jiff::tz::TimeZone::system()),
+        day
+    );
+    for k in x.repo.trade_keys(t) {
+        if k.status == KeyStatus::Traded {
+            assert_eq!(k.status_date, Some(day));
+        }
+    }
+    // The calendar sets it too.
+    rt.update(|s, _| s.select_trade(id));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "pick-trade_date");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .trade_form
+            .as_ref()
+            .unwrap()
+            .date_pick
+            .is_some()
+    );
+    assert!(rt.find("pick-prev").is_some(), "the calendar is showing");
+    rt.update(|s, _| s.pick_date(Some(jiff::civil::date(2025, 4, 1))));
+    let t = rt.state.session().unwrap().repo.trade(id).unwrap();
+    assert_eq!(
+        keykeeper_core::trade::trade_day(t, &jiff::tz::TimeZone::system()),
+        jiff::civil::date(2025, 4, 1)
+    );
+}
+
+#[test]
+fn grouping_by_source_ignores_case_and_the_editor_suggests_spellings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state_for(&dir.path().join("unused.kkvault"));
+    let mut data = demo::sample_data();
+    data.keys[0].source = Some("humble ".into());
+    demo::unlock(&mut s, data);
+    let mut rt = runtime(s);
+    rt.update(|s, _| s.toggle_group_by_source());
+    poll(&mut rt, 0.0);
+    rt.frame(1.0 / 60.0);
+    let x = rt.state.session().unwrap();
+    let groups: Vec<&str> = x
+        .display
+        .iter()
+        .filter_map(|r| match r {
+            crate::layout::DisplayRow::Group { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        groups
+            .iter()
+            .filter(|g| g.eq_ignore_ascii_case("humble"))
+            .count(),
+        1,
+        "{groups:?}"
+    );
+    assert!(
+        groups.contains(&"Humble"),
+        "most keys' spelling wins: {groups:?}"
+    );
+
+    // Typing in the editor offers the existing spelling, and saving snaps to it.
+    let id = rt.state.session().unwrap().rows[0];
+    rt.update(|s, _| s.open_key(id));
+    rt.update(|s, _| {
+        s.session_mut().unwrap().form.as_mut().unwrap().source = TextEdit::new("hum");
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("suggest-source-0").is_some());
+    rt.update(|s, _| {
+        s.session_mut().unwrap().form.as_mut().unwrap().source = TextEdit::new("HUMBLE");
+        s.save_form();
+    });
+    let k = rt.state.session().unwrap().repo.key(id).unwrap();
+    assert_eq!(k.source.as_deref(), Some("Humble"));
+}
+
+#[test]
+fn refresh_selected_updates_ratings_and_prices_for_just_those_keys() {
+    let dir = std::env::temp_dir();
+    let mut s = state_for(&dir.join("unused.kkvault"));
+    s.steam = std::sync::Arc::new(PricedSteam);
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime(s);
+    rt.update(|s, _| {
+        let ui = &mut s.session_mut().unwrap().steam_ui;
+        ui.country = TextEdit::new("gb");
+        ui.itad_key = TextEdit::new("itad-key");
+    });
+    let (picked, other) = {
+        let x = rt.state.session().unwrap();
+        let mut with_app = x.repo.keys().iter().filter(|k| k.steam_app_id.is_some());
+        (with_app.next().unwrap().id, with_app.next().unwrap().id)
+    };
+    rt.update(|s, _| s.refresh_selected(&[picked]));
+    let p = rt.state.job.as_ref().unwrap().progress();
+    assert!(p.starts_with("Refreshing game"), "{p}");
+    wait_for_steam(&mut rt);
+    let x = rt.state.session().unwrap();
+    assert!(x.repo.key_prices(x.repo.key(picked).unwrap()).is_some());
+    assert_eq!(
+        x.repo
+            .key_prices(x.repo.key(picked).unwrap())
+            .unwrap()
+            .country,
+        "GB"
+    );
+    assert!(
+        x.repo
+            .key_prices(x.repo.key(other).unwrap())
+            .is_none_or(|p| p.country != "GB"),
+        "other keys are left alone"
+    );
+}
+
+#[test]
+fn job_progress_shows_counts_and_notes() {
+    use keykeeper_steam::Progress;
+    let p = std::sync::Arc::new(crate::steam_actions::JobProgress::default());
+    let job = crate::steam_actions::Job {
+        label: "Fetching prices",
+        progress: p.clone(),
+        total: 700,
+    };
+    assert_eq!(job.progress(), "Fetching prices 0/700…");
+    p.advance(100);
+    p.note("gg.deals: waiting 61 s (100 games a minute)");
+    assert_eq!(
+        job.progress(),
+        "Fetching prices 100/700 · gg.deals: waiting 61 s (100 games a minute)…"
+    );
 }

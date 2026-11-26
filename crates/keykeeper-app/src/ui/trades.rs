@@ -3,16 +3,17 @@
 
 use keykeeper_core::{Trade, TradeStatus};
 use rune::{El, ScrollSpec, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Checkbox, Kit};
+use rune_kit::{Button, ButtonVariant, Checkbox, Kit, TextInput};
 
 use super::cart::{checkout_card, details_form, text_block, trade_status_pill};
-use super::{card, heading_style, muted, primary, spacer, title_style};
+use super::{card, field, heading_style, hstack, muted, primary, spacer, title_style, trade_edit};
 use crate::app::{AppState, Page, Session};
 
 fn when(sess: &Session, t: &Trade) -> String {
-    let ts = t.completed_at.or(t.sent_at).unwrap_or(t.created_at);
-    sess.date_format()
-        .format(ts.to_zoned_datetime(jiff::tz::TimeZone::system()).date())
+    sess.date_format().format(keykeeper_core::trade::trade_day(
+        t,
+        &jiff::tz::TimeZone::system(),
+    ))
 }
 
 fn title(t: &Trade) -> String {
@@ -290,10 +291,45 @@ fn detail(
                 ),
         );
     }
+    let fmt = sess.date_format();
+    let label = match t.status {
+        TradeStatus::Completed => "Completed on",
+        TradeStatus::Pending => "Sent on",
+        _ => "Date",
+    };
+    let date = field(
+        k,
+        label,
+        hstack()
+            .w_full()
+            .child(
+                TextInput::new(&form.date)
+                    .placeholder(crate::form::date_hint(fmt).to_string())
+                    .width(Some(180.0))
+                    .on_edit(|s: &mut AppState| trade_edit(s, |f| &mut f.date))
+                    .build(k)
+                    .key("trade-date"),
+            )
+            .child(super::datepick::button(
+                k,
+                form.date_pick,
+                &form.date,
+                super::datepick::TRADE_DATE,
+                fmt,
+                overlays,
+            ))
+            .child(muted(k, "Keys traded in it get this date too.")),
+        None,
+    );
     c.child(card(
         k,
         "trade-edit",
         "Details",
-        details_form(form, t.status == TradeStatus::Pending, k, overlays),
+        col().w_full().gap(14.0).child(date).child(details_form(
+            form,
+            t.status == TradeStatus::Pending,
+            k,
+            overlays,
+        )),
     ))
 }

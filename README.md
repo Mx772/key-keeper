@@ -15,25 +15,29 @@ Built in Rust with the [RUNE](https://github.com/anomalyco/rune) GPU UI framewor
   - **At a glance:** under the title, how many keys you still hold, how many are in the cart, what they're worth at today's cheapest prices, and how many redemption deadlines are near or past. Each figure is a shortcut to its filter, and the sidebar shows "N soon" when deadlines are close. Near deadlines read "in 12 days" / "6 days ago".
   - **Filters:** status, hide traded & redeemed, deadline within 30 days, no Steam id, **Spares I own** (keys still in hand for games you already own on Steam) and **Duplicates** (games you have more than one key for).
   - **Game details on hover:** rest the pointer on a game's name to see its artwork, developer, release year, tags, description, review score, Steam Deck status, ownership, best price and all-time low, deadline and bundle. You can turn it off or change the delay in Settings › Library.
-  - **Right-click menu** on any row (or the Menu key): edit, copy the key, cart, redeem, set status, open on Steam / gg.deals / IsThereAnyDeal, delete. With several rows selected it acts on all of them.
+  - **Right-click menu** on any row (or the Menu key): edit, copy the key, cart, redeem, set status, open on Steam / gg.deals / IsThereAnyDeal, show the key's trade or open its trade link, **Refresh prices & ratings** for just the selected games, delete. With several rows selected it acts on all of them.
   - **Bulk edit:** select several keys and choose **Edit…** to set status, platform, bundle, source or deadline, or add and remove tags, for all of them in one undo step.
-  - **View menu:** table or **grid with artwork**, comfortable or compact rows, **group by bundle** (foldable), and which columns to show (also by right-clicking a column header). Column widths, order, sort and view are remembered.
+  - **View menu:** table or **grid with artwork**, comfortable or compact rows, **group by bundle or source** (foldable; "Humble" and "humble" are one group), and which columns to show (also by right-clicking a column header), including an optional sortable **Source** column. Column widths, order, sort and view are remembered.
+  - **Bundle and source suggestions:** while you type in the key editor, the bundles and sources you already use appear as chips to pick, and a value that differs only in case is saved with the spelling your library already uses.
 - **Statuses.** Available, Reserved (in the cart), Traded, Redeemed, Gifted, Unknown.
 - **Import.** Reads CSV/TSV exports, Excel or Sheets pastes, and plain lists like `Game: XXXXX-XXXXX-XXXXX`. Columns are matched automatically and you can remap them. Dates follow a day-first or month-first setting. A preview marks each row as new, duplicate or error before anything is added.
 - **Export.** CSV (re-imports cleanly), JSON, or an encrypted backup copy.
 - **Trading.**
   - Add keys to a cart (a floating cart button shows the count) and copy the checkout text (`{name}: {key}` by default).
   - Record the partner, trade link and what you receive. Mark the trade as sent, then complete it: your keys become *Traded*, and received games can be added to your library.
+  - Set the date a trade happened (typed or from a calendar), for example for trades imported from a spreadsheet. Its traded keys get the same date.
   - Generate a steamtrades reputation post.
   - **Copy have list** copies the names of the tradable keys in view (never the keys), one line per game with copies merged ("Tunic x2"), for a trading site's "have" list.
   - All three texts come from templates you can edit in Settings › Templates.
 - **Steam.**
-  - Match games to Steam app ids, then fetch review scores (the header's **Steam** menu).
+  - Match games to Steam app ids, then fetch review scores (the header's **Steam** menu). Keys with the same game share one search. Games without an exact match open a **review** where you pick from Steam's closest results or search again with other words; a library-wide match skips them for two weeks unless you select them.
+  - Requests are paced per site (Steam's store search more slowly), wait out and retry rate limits, and slow down after one. A batch that stops early keeps what it already fetched; the rest is fetched next time. The status bar shows progress and what's happening, for example the pause gg.deals needs between batches of 100 games.
   - Check your public wishlist, and your library if you add a Web API key.
   - Store details and header art for the hover card, grid and editor come from Steam's store. Artwork is cached **encrypted** next to your vault (`<vault>.cache/`, file names don't reveal which games), and you can turn fetching off or clear the cache in Settings › Library.
   - Game names link to their Steam page, and the key editor has link buttons for Steam, gg.deals and IsThereAnyDeal.
   - **Redeem on Steam** opens Steam's activation page with the key filled in and marks the key Redeemed with today's date. Non-Steam keys get **Mark redeemed by me**. In the cart, each key has a Redeem button, and **Self-checkout** marks every cart key redeemed.
 - **Prices.** With an IsThereAnyDeal and/or gg.deals API key and your country (Settings › Prices), the library's Deals column shows each game's cheapest current store price, marked **LOW** when it matches the all-time low. Hover it to see every store, the all-time low and the keyshop price; click it to open the deal.
+- **Diagnostics.** Settings › Diagnostics shows recent activity (requests, rate limits, errors) and can export the log or open its folder (`%APPDATA%\KeyKeeper\data\logs` on Windows). Keys and API keys are never logged.
 - **Security.** Copied keys are excluded from clipboard history and cleared after a delay. The app locks itself when idle and saves before locking.
 - **Themes.** Midnight (default), Amethyst, Forest, Opencode, Graphite, Light, System. The window opens at the size you left it.
 

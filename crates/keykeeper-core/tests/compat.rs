@@ -77,6 +77,11 @@ fn fixture_data(app_version: &str) -> VaultData {
         },
     );
     d.templates.have_line = "{name}{count} ({platform})".into();
+    if version_of(&d) < (0, 3, 1) {
+        return d;
+    }
+    // Added in 0.3.1: when Match on Steam last found no exact match.
+    d.keys[1].steam_searched_at = jiff::Timestamp::from_second(1_764_100_000).ok();
     d
 }
 
@@ -140,6 +145,20 @@ fn check(file: &Path, d: &VaultData) {
     }
 }
 
+fn check_0_3_1(file: &Path, d: &VaultData) {
+    let name = file.display();
+    let searched = d.keys[1].steam_searched_at;
+    if version_of(d) >= (0, 3, 1) {
+        assert_eq!(
+            searched,
+            jiff::Timestamp::from_second(1_764_100_000).ok(),
+            "{name}"
+        );
+    } else {
+        assert_eq!(searched, None, "{name}: older vaults have none");
+    }
+}
+
 fn fixtures() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(fixtures_dir())
         .expect("tests/fixtures/vaults exists")
@@ -164,6 +183,7 @@ fn every_released_vault_still_opens() {
             file.display()
         );
         check(file, &data);
+        check_0_3_1(file, &data);
     }
 }
 
@@ -187,6 +207,9 @@ fn semver_like(v: &str) -> Option<()> {
 fn generated_data_passes_the_check() {
     check(Path::new("fixture_data"), &fixture_data("0.0.0"));
     check(Path::new("fixture_data"), &fixture_data("0.3.0"));
+    check(Path::new("fixture_data"), &fixture_data("0.3.1"));
+    check_0_3_1(Path::new("fixture_data"), &fixture_data("0.3.1"));
+    check_0_3_1(Path::new("fixture_data"), &fixture_data("0.3.0"));
 }
 
 /// Writes `tests/fixtures/vaults/v<this version>.kkvault`. Run before tagging a release (see the

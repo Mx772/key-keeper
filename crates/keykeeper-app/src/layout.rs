@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use keykeeper_core::query::natural_cmp;
+use keykeeper_core::{LabelField, label_key};
 use keykeeper_core::{Sort, SortDir, SortField};
 use uuid::Uuid;
 
@@ -11,8 +12,9 @@ use crate::app::{AppState, Session};
 use crate::config::{Density, LibraryLayout, LibraryView};
 
 /// Every library column but the game's name (which always shows): id and title.
-pub const COLUMNS: [(&str, &str); 9] = [
+pub const COLUMNS: [(&str, &str); 10] = [
     ("bundle", "Bundle"),
+    ("source", "Source"),
     ("key", "Key"),
     ("status", "Status"),
     ("platform", "Platform"),
@@ -38,6 +40,7 @@ pub enum DisplayRow {
 }
 
 pub const NO_BUNDLE: &str = "No bundle";
+pub const NO_SOURCE: &str = "No source";
 const GROUP_PREFIX: &str = "group:";
 
 pub fn group_row_id(name: &str) -> String {
@@ -76,26 +79,53 @@ pub fn parse_sort(s: &str) -> Option<(String, rune_kit::SortDir)> {
         "desc" => rune_kit::SortDir::Descending,
         _ => return None,
     };
-    let known = col == "name" || col == "source" || COLUMNS.iter().any(|c| c.0 == col);
+    let known = col == "name" || COLUMNS.iter().any(|c| c.0 == col);
     known.then(|| (col.to_string(), dir))
 }
 
 impl Session {
-    /// Rebuild `display` from `rows`: grouped by bundle (bundles in natural order, "No bundle"
+    /// What the table groups by, if anything.
+    pub fn group_field(&self) -> Option<LabelField> {
+        if self.group_by_source {
+            Some(LabelField::Source)
+        } else if self.group_by_bundle {
+            Some(LabelField::Bundle)
+        } else {
+            None
+        }
+    }
+
+    /// Rebuild `display` from `rows`: grouped by bundle or source (groups in natural order,
+    /// spelled the way most of their keys spell them, case and spacing ignored; "No bundle"
     /// last, keys inside keeping their sort), or one row per key.
     pub fn rebuild_display(&mut self) {
-        if !self.group_by_bundle {
+        let Some(field) = self.group_field() else {
             self.display = self.rows.iter().copied().map(DisplayRow::Key).collect();
-        } else {
-            let bundle = |id: &Uuid| {
-                self.repo
-                    .key(*id)
-                    .and_then(|k| k.bundle.clone())
-                    .filter(|b| !b.trim().is_empty())
+            self.row_ids = self.rows.iter().map(Uuid::to_string).collect();
+            return;
+        };
+        {
+            let none = match field {
+                LabelField::Bundle => NO_BUNDLE,
+                LabelField::Source => NO_SOURCE,
             };
-            let mut rows = self.rows.clone();
-            rows.sort_by(|a, b| match (bundle(a), bundle(b)) {
-                (Some(x), Some(y)) => natural_cmp(&x, &y),
+            let names: std::collections::HashMap<String, String> =
+                keykeeper_core::label_values(self.repo.keys(), field)
+                    .into_iter()
+                    .map(|(v, _)| (label_key(&v), v))
+                    .collect();
+            let group = |id: &Uuid| {
+                self.repo.key(*id).and_then(|k| field.of(k)).map(|v| {
+                    names
+                        .get(&label_key(v))
+                        .cloned()
+                        .unwrap_or_else(|| v.trim().to_string())
+                })
+            };
+            let mut rows: Vec<(Uuid, Option<String>)> =
+                self.rows.iter().map(|id| (*id, group(id))).collect();
+            rows.sort_by(|(_, a), (_, b)| match (a, b) {
+                (Some(x), Some(y)) => natural_cmp(x, y),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
@@ -103,11 +133,9 @@ impl Session {
             let mut display = Vec::with_capacity(rows.len() + 8);
             let mut i = 0;
             while i < rows.len() {
-                let name = bundle(&rows[i]).unwrap_or_else(|| NO_BUNDLE.to_string());
+                let name = rows[i].1.clone().unwrap_or_else(|| none.to_string());
                 let mut j = i;
-                while j < rows.len()
-                    && bundle(&rows[j]).unwrap_or_else(|| NO_BUNDLE.to_string()) == name
-                {
+                while j < rows.len() && rows[j].1.as_deref().unwrap_or(none) == name {
                     j += 1;
                 }
                 let collapsed = self.collapsed.contains(&name);
@@ -117,11 +145,11 @@ impl Session {
                     collapsed,
                 });
                 if !collapsed {
-                    display.extend(rows[i..j].iter().copied().map(DisplayRow::Key));
+                    display.extend(rows[i..j].iter().map(|(id, _)| DisplayRow::Key(*id)));
                 }
                 i = j;
             }
-            self.rows = rows;
+            self.rows = rows.into_iter().map(|(id, _)| id).collect();
             self.display = display;
         }
         self.row_ids = self
@@ -157,6 +185,7 @@ impl Session {
             self.table.set_column_order(l.column_order.clone());
         }
         self.group_by_bundle = l.group_by_bundle;
+        self.group_by_source = l.group_by_source && !l.group_by_bundle;
         if let Some((col, dir)) = l.sort.as_deref().and_then(parse_sort) {
             self.table.set_sort(col.clone(), dir);
             self.sort = crate::app::sort_for(&col, dir);
@@ -181,6 +210,7 @@ impl Session {
             .collect();
         into.column_order = self.table.column_order().to_vec();
         into.group_by_bundle = self.group_by_bundle;
+        into.group_by_source = self.group_by_source;
         into.sort = Some(sort_to_string(self.sort));
         into
     }
@@ -224,6 +254,17 @@ impl AppState {
     pub fn toggle_group_by_bundle(&mut self) {
         if let Some(s) = self.session_mut() {
             s.group_by_bundle = !s.group_by_bundle;
+            s.group_by_source = false;
+            s.collapsed.clear();
+            s.filters_changed();
+        }
+    }
+
+    pub fn toggle_group_by_source(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.group_by_source = !s.group_by_source;
+            s.group_by_bundle = false;
+            s.collapsed.clear();
             s.filters_changed();
         }
     }

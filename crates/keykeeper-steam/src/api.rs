@@ -5,11 +5,11 @@ use serde_json::Value;
 
 use crate::deals::{
     self, GG_DEALS_BATCH, GgBatch, ITAD_LOOKUP_BATCH, ITAD_PRICES_BATCH, ITAD_STEAM_SHOP,
-    ItadPrices, service_err,
+    ItadBatch, ItadPrices, service_err,
 };
 use crate::details::{StoreDetails, parse_store_details, parse_tag_list};
 use crate::http::Http;
-use crate::{Result, SteamError};
+use crate::{Partial, Progress, Result, SteamError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppMatch {
@@ -63,28 +63,36 @@ pub fn parse_profile_input(input: &str) -> Option<ProfileRef> {
 pub trait SteamApi: Send + Sync {
     fn search(&self, term: &str) -> Result<Vec<AppMatch>>;
     /// Review summaries for many apps (batched internally). Apps Steam doesn't know are omitted.
-    fn reviews(&self, app_ids: &[u32]) -> Result<Vec<Review>>;
+    /// A batch failing after earlier ones succeeded keeps what they got (see [`Partial`]).
+    fn reviews(&self, app_ids: &[u32], progress: &dyn Progress) -> Result<Partial<Review>>;
     fn resolve_profile(&self, input: &str) -> Result<u64>;
     /// App ids on a public wishlist (empty if private or empty).
     fn wishlist(&self, steam_id: u64) -> Result<Vec<u32>>;
     fn owned_games(&self, api_key: &str, steam_id: u64) -> Result<Vec<u32>>;
     /// IsThereAnyDeal prices for Steam apps in `country` (two letters). Apps ITAD doesn't know
-    /// are omitted.
+    /// are omitted from `prices` but listed in `seen`.
     fn itad_prices(
         &self,
         _api_key: &str,
         _country: &str,
         _app_ids: &[u32],
-    ) -> Result<Vec<ItadPrices>> {
+        _progress: &dyn Progress,
+    ) -> Result<ItadBatch> {
         Err(SteamError::Unsupported("IsThereAnyDeal"))
     }
     /// gg.deals prices for Steam apps in `region` (gg.deals' lowercase region code).
-    fn gg_deals_prices(&self, _api_key: &str, _region: &str, _app_ids: &[u32]) -> Result<GgBatch> {
+    fn gg_deals_prices(
+        &self,
+        _api_key: &str,
+        _region: &str,
+        _app_ids: &[u32],
+        _progress: &dyn Progress,
+    ) -> Result<GgBatch> {
         Err(SteamError::Unsupported("gg.deals"))
     }
     /// Store details for many apps (batched internally), each with its top tags' names.
-    /// Apps Steam doesn't know are omitted.
-    fn store_details(&self, _app_ids: &[u32]) -> Result<Vec<(StoreDetails, Vec<String>)>> {
+    /// Apps Steam doesn't know are omitted. A failing batch keeps what earlier ones got.
+    fn store_details(&self, _app_ids: &[u32]) -> Result<Partial<(StoreDetails, Vec<String>)>> {
         Err(SteamError::Unsupported("store details"))
     }
     /// An image from Steam's CDN (https, `*.steamstatic.com` only).
@@ -142,8 +150,8 @@ impl<H: Http> SteamApi for Steam<H> {
         parse_search(&body)
     }
 
-    fn reviews(&self, app_ids: &[u32]) -> Result<Vec<Review>> {
-        let mut out = Vec::new();
+    fn reviews(&self, app_ids: &[u32], progress: &dyn Progress) -> Result<Partial<Review>> {
+        let mut out = Partial::default();
         for chunk in app_ids.chunks(REVIEW_BATCH) {
             let ids: Vec<Value> = chunk
                 .iter()
@@ -155,11 +163,25 @@ impl<H: Http> SteamApi for Steam<H> {
                 "data_request": { "include_reviews": true }
             })
             .to_string();
-            let body = self.http.get(
-                "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
-                &[("input_json", &input)],
-            )?;
-            out.extend(parse_reviews(&body)?);
+            let step = self
+                .http
+                .get(
+                    "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
+                    &[("input_json", &input)],
+                )
+                .and_then(|body| parse_reviews(&body));
+            match step {
+                Ok(r) => out.items.extend(r),
+                Err(e) => {
+                    log::warn!("reviews: stopped after {} apps: {e}", out.items.len());
+                    if out.items.is_empty() {
+                        return Err(e);
+                    }
+                    out.error = Some(e);
+                    break;
+                }
+            }
+            progress.advance(chunk.len());
         }
         Ok(out)
     }
@@ -208,51 +230,96 @@ impl<H: Http> SteamApi for Steam<H> {
         api_key: &str,
         country: &str,
         app_ids: &[u32],
-    ) -> Result<Vec<ItadPrices>> {
+        progress: &dyn Progress,
+    ) -> Result<ItadBatch> {
         let itad = |e| service_err("IsThereAnyDeal", e);
+        let mut out = ItadBatch::default();
+        // Stop at the first failure; what's done is kept and the rest is retried next time.
+        let stop = |out: &mut ItadBatch, e: SteamError| -> Result<()> {
+            log::warn!("IsThereAnyDeal: stopped after {} apps: {e}", out.seen.len());
+            if out.seen.is_empty() {
+                return Err(e);
+            }
+            out.error = Some(e);
+            Ok(())
+        };
+        progress.note("IsThereAnyDeal: looking up games");
         let mut ids: Vec<(u32, String)> = Vec::new();
         for chunk in app_ids.chunks(ITAD_LOOKUP_BATCH) {
             let body: Vec<String> = chunk.iter().map(|a| format!("app/{a}")).collect();
             let body =
                 serde_json::to_string(&body).map_err(|e| SteamError::Parse(e.to_string()))?;
-            let res = self
+            let step = self
                 .http
                 .post_json(
                     &format!("https://api.isthereanydeal.com/lookup/id/shop/{ITAD_STEAM_SHOP}/v1"),
                     &[("key", api_key)],
                     &body,
                 )
-                .map_err(itad)?;
-            ids.extend(deals::parse_itad_lookup(&res)?);
+                .map_err(itad)
+                .and_then(|res| deals::parse_itad_lookup(&res));
+            match step {
+                Ok(found) => {
+                    // Apps ITAD doesn't know are done: there's nothing to price.
+                    let unknown: Vec<u32> = chunk
+                        .iter()
+                        .copied()
+                        .filter(|a| !found.iter().any(|(f, _)| f == a))
+                        .collect();
+                    progress.advance(unknown.len());
+                    out.seen.extend(unknown);
+                    ids.extend(found);
+                }
+                Err(e) => {
+                    // Nothing looked up in this batch: price what earlier batches found.
+                    if ids.is_empty() {
+                        stop(&mut out, e)?;
+                    } else {
+                        out.error = Some(e);
+                    }
+                    break;
+                }
+            }
         }
-        let mut out = Vec::new();
+        progress.note("IsThereAnyDeal: fetching prices");
         for chunk in ids.chunks(ITAD_PRICES_BATCH) {
             let body: Vec<&str> = chunk.iter().map(|(_, g)| g.as_str()).collect();
             let body =
                 serde_json::to_string(&body).map_err(|e| SteamError::Parse(e.to_string()))?;
-            let res = self
+            let step = self
                 .http
                 .post_json(
                     "https://api.isthereanydeal.com/games/prices/v3",
                     &[("key", api_key), ("country", country)],
                     &body,
                 )
-                .map_err(itad)?;
-            for (gid, deals, history_low) in deals::parse_itad_prices(&res)? {
+                .map_err(itad)
+                .and_then(|res| deals::parse_itad_prices(&res));
+            let games = match step {
+                Ok(g) => g,
+                Err(e) => {
+                    stop(&mut out, e)?;
+                    break;
+                }
+            };
+            for (gid, deals, history_low) in games {
                 for (app_id, _) in chunk.iter().filter(|(_, g)| *g == gid) {
-                    out.push(ItadPrices {
+                    out.prices.push(ItadPrices {
                         app_id: *app_id,
                         deals: deals.clone(),
                         history_low: history_low.clone(),
                     });
                 }
             }
+            out.seen.extend(chunk.iter().map(|(a, _)| *a));
+            progress.advance(chunk.len());
         }
         Ok(out)
     }
 
-    fn store_details(&self, app_ids: &[u32]) -> Result<Vec<(StoreDetails, Vec<String>)>> {
+    fn store_details(&self, app_ids: &[u32]) -> Result<Partial<(StoreDetails, Vec<String>)>> {
         let mut found = Vec::new();
+        let mut error = None;
         for chunk in app_ids.chunks(REVIEW_BATCH) {
             let ids: Vec<Value> = chunk
                 .iter()
@@ -270,11 +337,24 @@ impl<H: Http> SteamApi for Steam<H> {
                 }
             })
             .to_string();
-            let body = self.http.get(
-                "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
-                &[("input_json", &input)],
-            )?;
-            found.extend(parse_store_details(&body)?);
+            let step = self
+                .http
+                .get(
+                    "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
+                    &[("input_json", &input)],
+                )
+                .and_then(|body| parse_store_details(&body));
+            match step {
+                Ok(d) => found.extend(d),
+                Err(e) => {
+                    log::warn!("store details: stopped after {} apps: {e}", found.len());
+                    if found.is_empty() {
+                        return Err(e);
+                    }
+                    error = Some(e);
+                    break;
+                }
+            }
         }
         let need_tags = found.iter().any(|d| !d.tag_ids.is_empty());
         let mut names = self
@@ -290,7 +370,7 @@ impl<H: Http> SteamApi for Steam<H> {
                 *names = parse_tag_list(&body).ok();
             }
         }
-        Ok(found
+        let items = found
             .into_iter()
             .map(|d| {
                 let tags = d
@@ -300,7 +380,8 @@ impl<H: Http> SteamApi for Steam<H> {
                     .collect();
                 (d, tags)
             })
-            .collect())
+            .collect();
+        Ok(Partial { items, error })
     }
 
     fn download_image(&self, url: &str) -> Result<Vec<u8>> {
@@ -310,12 +391,30 @@ impl<H: Http> SteamApi for Steam<H> {
         self.http.get_bytes(url, IMAGE_LIMIT)
     }
 
-    fn gg_deals_prices(&self, api_key: &str, region: &str, app_ids: &[u32]) -> Result<GgBatch> {
+    fn gg_deals_prices(
+        &self,
+        api_key: &str,
+        region: &str,
+        app_ids: &[u32],
+        progress: &dyn Progress,
+    ) -> Result<GgBatch> {
         let mut out = GgBatch::default();
         for (i, chunk) in app_ids.chunks(GG_DEALS_BATCH).enumerate() {
             if i > 0 {
+                // gg.deals allows 100 games a minute.
+                progress.note(&format!(
+                    "gg.deals: waiting {} s (100 games a minute)",
+                    self.gg_pause.as_secs()
+                ));
+                log::info!(
+                    "gg.deals: {} of {} done, pausing {} s for its rate limit",
+                    out.seen.len(),
+                    app_ids.len(),
+                    self.gg_pause.as_secs()
+                );
                 std::thread::sleep(self.gg_pause);
             }
+            progress.note("gg.deals: fetching prices");
             let ids: Vec<String> = chunk.iter().map(u32::to_string).collect();
             let ids = ids.join(",");
             let step = self
@@ -332,11 +431,13 @@ impl<H: Http> SteamApi for Steam<H> {
                 Ok((prices, seen)) => {
                     out.prices.extend(prices);
                     out.seen.extend(seen);
+                    progress.advance(chunk.len());
                 }
                 // Nothing fetched yet: the whole request failed.
                 Err(e) if out.seen.is_empty() => return Err(e),
                 // Keep what earlier batches got; the rest is retried next time.
                 Err(e) => {
+                    log::warn!("gg.deals: stopped after {} apps: {e}", out.seen.len());
                     out.error = Some(e);
                     break;
                 }
@@ -454,6 +555,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::NoProgress;
 
     // Recorded from the live endpoints on 2026-11-25 (trimmed).
     const SEARCH: &str = r#"{"total":1,"items":[{"type":"app","name":"Haiku, the Robot","id":1231880,"price":{"currency":"USD","initial":1999,"final":679},"tiny_image":"https:\/\/shared.akamai.steamstatic.com\/x.jpg","metascore":"","platforms":{"windows":true,"mac":true,"linux":false},"streamingvideo":false,"controller_support":"full"}]}"#;
@@ -561,7 +663,7 @@ mod tests {
                 r#"{"response":{"store_items":[{"id":5,"appid":5,"success":1,"name":"Five","tags":[{"tagid":21,"weight":9},{"tagid":1628,"weight":10},{"tagid":77,"weight":1}]}]}}"#.into()
             })
         });
-        let got = s.store_details(&[5]).unwrap();
+        let got = s.store_details(&[5]).unwrap().items;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0.app_id, 5);
         assert_eq!(
@@ -603,7 +705,7 @@ mod tests {
             }
         });
         let ids: Vec<u32> = (1..=150).collect();
-        let got = s.gg_deals_prices("k", "us", &ids).unwrap();
+        let got = s.gg_deals_prices("k", "us", &ids, &NoProgress).unwrap();
         assert_eq!(s.http.calls.lock().unwrap().len(), 2);
         assert_eq!(got.prices.len(), 1);
         assert_eq!(got.seen, vec![1, 2]);
@@ -616,11 +718,51 @@ mod tests {
     fn reviews_are_batched_by_fifty() {
         let s = fake(|_| Ok(REVIEWS.to_string()));
         let ids: Vec<u32> = (1..=120).collect();
-        let got = s.reviews(&ids).unwrap();
+        let got = s.reviews(&ids, &NoProgress).unwrap().items;
         let calls = s.http.calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
         assert!(calls[0].1[0].1.contains("\"include_reviews\":true"));
         assert_eq!(got.len(), 3, "one review per (fake) response");
+    }
+
+    #[test]
+    fn reviews_keep_earlier_batches_when_one_fails() {
+        let s = fake(|_| {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            if N.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(REVIEWS.to_string())
+            } else {
+                Err(SteamError::RateLimited)
+            }
+        });
+        let ids: Vec<u32> = (1..=120).collect();
+        let got = s.reviews(&ids, &NoProgress).unwrap();
+        assert_eq!(got.items.len(), 1);
+        assert_eq!(got.error, Some(SteamError::RateLimited));
+        // Nothing fetched at all is a plain error.
+        let s = fake(|_| Err(SteamError::RateLimited));
+        assert_eq!(s.reviews(&ids, &NoProgress), Err(SteamError::RateLimited));
+    }
+
+    #[test]
+    fn progress_counts_games_and_notes_the_gg_deals_pause() {
+        struct Rec(Mutex<(usize, Vec<String>)>);
+        impl Progress for Rec {
+            fn advance(&self, n: usize) {
+                self.0.lock().unwrap().0 += n;
+            }
+            fn note(&self, what: &str) {
+                self.0.lock().unwrap().1.push(what.to_string());
+            }
+        }
+        let s = fake(|_| Ok(r#"{"success":true,"data":{}}"#.into()));
+        let rec = Rec(Mutex::new((0, Vec::new())));
+        let ids: Vec<u32> = (1..=250).collect();
+        s.gg_deals_prices("k", "us", &ids, &rec).unwrap();
+        let (n, notes) = rec.0.into_inner().unwrap();
+        assert_eq!(n, 250);
+        assert!(notes.iter().any(|m| m.contains("waiting")), "{notes:?}");
     }
 
     #[test]
@@ -670,7 +812,9 @@ mod tests {
                 r#"[{"id":"g1","historyLow":{"all":null},"deals":[{"shop":{"id":61,"name":"Steam"},"price":{"amount":1.0,"amountInt":100,"currency":"USD"},"cut":0,"url":"u"}]}]"#.to_string()
             })
         });
-        let got = s.itad_prices("k", "GB", &[220, 400]).unwrap();
+        let got = s.itad_prices("k", "GB", &[220, 400], &NoProgress).unwrap();
+        assert_eq!(got.seen, vec![400, 220]);
+        let got = got.prices;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].app_id, 220);
         assert_eq!(got[0].deals[0].price.cents, 100);
@@ -689,11 +833,11 @@ mod tests {
     fn price_services_map_auth_errors() {
         let s = fake(|_| Err(SteamError::Status(403)));
         assert_eq!(
-            s.itad_prices("bad", "US", &[1]),
+            s.itad_prices("bad", "US", &[1], &NoProgress),
             Err(SteamError::BadServiceKey("IsThereAnyDeal"))
         );
         assert_eq!(
-            s.gg_deals_prices("bad", "us", &[1]),
+            s.gg_deals_prices("bad", "us", &[1], &NoProgress),
             Err(SteamError::BadServiceKey("gg.deals"))
         );
     }
@@ -705,12 +849,17 @@ mod tests {
     fn live_prices() {
         let s = Steam::new(crate::UreqHttp::new());
         if let Ok(k) = std::env::var("ITAD_KEY") {
-            let p = s.itad_prices(&k, "US", &[400, 1145360]).unwrap();
+            let p = s
+                .itad_prices(&k, "US", &[400, 1145360], &NoProgress)
+                .unwrap()
+                .prices;
             println!("ITAD: {p:#?}");
             assert!(!p.is_empty() && p.iter().all(|g| !g.deals.is_empty()));
         }
         if let Ok(k) = std::env::var("GG_DEALS_KEY") {
-            let p = s.gg_deals_prices(&k, "us", &[400, 1145360]).unwrap();
+            let p = s
+                .gg_deals_prices(&k, "us", &[400, 1145360], &NoProgress)
+                .unwrap();
             println!("gg.deals: {p:#?}");
             assert!(p.prices.iter().any(|g| g.retail.is_some()) && p.error.is_none());
         }
@@ -723,7 +872,7 @@ mod tests {
         let s = Steam::new(crate::UreqHttp::new());
         let found = s.search("Haiku, the Robot").unwrap();
         assert!(found.iter().any(|m| m.app_id == 1231880), "{found:?}");
-        let r = s.reviews(&[1231880, 391540]).unwrap();
+        let r = s.reviews(&[1231880, 391540], &NoProgress).unwrap().items;
         assert_eq!(r.len(), 2, "{r:?}");
         assert!(r.iter().all(|r| r.percent > 50 && r.total > 100));
         assert_eq!(
@@ -731,7 +880,7 @@ mod tests {
             76561197960287930
         );
         assert!(s.wishlist(76561197960287930).is_ok());
-        let d = s.store_details(&[1231880, 367520]).unwrap();
+        let d = s.store_details(&[1231880, 367520]).unwrap().items;
         assert_eq!(d.len(), 2, "{d:?}");
         let (hk, tags) = d.iter().find(|(d, _)| d.app_id == 367520).unwrap();
         assert!(

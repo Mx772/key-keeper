@@ -17,6 +17,26 @@ use crate::repo::Repo;
 use crate::secret::Secret;
 use crate::template::{self, TemplateError};
 
+/// A date with no time of day (imported or picked) is stored as midnight UTC.
+pub fn day_timestamp(date: Date) -> Timestamp {
+    date.to_zoned_datetime(jiff::tz::TimeZone::UTC)
+        .map(|z| z.timestamp())
+        .unwrap_or(Timestamp::UNIX_EPOCH)
+}
+
+/// The day `t` happened: completed, else sent, else made, in `tz`. A timestamp at exactly
+/// midnight UTC is a date without a time (see [`day_timestamp`]) and reads as that day
+/// everywhere, instead of the day before west of Greenwich.
+pub fn trade_day(t: &Trade, tz: &jiff::tz::TimeZone) -> Date {
+    let ts = t.completed_at.or(t.sent_at).unwrap_or(t.created_at);
+    let utc = ts.to_zoned_datetime(jiff::tz::TimeZone::UTC);
+    if utc.time() == jiff::civil::Time::midnight() {
+        utc.date()
+    } else {
+        ts.to_zoned_datetime(tz.clone()).date()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TradeError {
     #[error("trade not found")]
@@ -47,10 +67,6 @@ impl DateFormat {
             DateFormat::DayMonthYear => format!("{}/{}/{}", d.day(), d.month(), d.year()),
         }
     }
-}
-
-fn local_date(t: Timestamp) -> Date {
-    t.to_zoned_datetime(jiff::tz::TimeZone::system()).date()
 }
 
 /// Parse a "received" text box: one game per line, optionally with a key (`Game: KEY`).
@@ -234,6 +250,34 @@ impl Repo {
         Ok(())
     }
 
+    /// Change the day a trade happened (as [`trade_day`] reads it): the completion date of a
+    /// completed trade, otherwise the day it was sent (or made). Keys it traded away take the
+    /// same date. One undo step.
+    pub fn set_trade_date(&mut self, id: Uuid, date: Date) -> Result<(), TradeError> {
+        let mut t = self.trade(id).cloned().ok_or(TradeError::NotFound)?;
+        let at = day_timestamp(date);
+        if t.completed_at.is_some() || t.status == TradeStatus::Completed {
+            t.completed_at = Some(at);
+        } else if t.sent_at.is_some() {
+            t.sent_at = Some(at);
+        } else {
+            t.created_at = at;
+        }
+        let keys: Vec<GameKey> = t
+            .key_ids
+            .iter()
+            .filter_map(|k| self.key(*k))
+            .filter(|k| k.trade_id == Some(id) && k.status == KeyStatus::Traded)
+            .map(|k| {
+                let mut k = k.clone();
+                k.status_date = Some(date);
+                k
+            })
+            .collect();
+        self.apply_changes("Set trade date", keys, vec![t], &[]);
+        Ok(())
+    }
+
     /// Draft → Pending.
     pub fn send_trade(&mut self, id: Uuid) -> Result<(), TradeError> {
         let mut t = self.trade(id).cloned().ok_or(TradeError::NotFound)?;
@@ -360,12 +404,7 @@ impl Repo {
             "partner_url" => trade.partner_profile_url.clone().unwrap_or_default(),
             "trade_url" => trade.trade_url.clone().unwrap_or_default(),
             "site" => trade.site.label().to_string(),
-            "date" => fmt.format(local_date(
-                trade
-                    .completed_at
-                    .or(trade.sent_at)
-                    .unwrap_or(trade.created_at),
-            )),
+            "date" => fmt.format(trade_day(trade, &jiff::tz::TimeZone::system())),
             "count" => self.trade_keys(trade).len().to_string(),
             "games" => self
                 .trade_keys(trade)
@@ -418,6 +457,32 @@ impl Repo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trade_dates_are_days_in_any_time_zone() {
+        let mut repo = Repo::new(crate::VaultData::default());
+        let mut t = Trade::new();
+        t.status = TradeStatus::Completed;
+        let mut k = GameKey::new("Tunic", "TUN1C-F0X99-AAAA1");
+        k.status = KeyStatus::Traded;
+        k.trade_id = Some(t.id);
+        t.key_ids.push(k.id);
+        repo.apply_changes("seed", vec![k.clone()], vec![t.clone()], &[]);
+        let day = jiff::civil::date(2025, 3, 9);
+        repo.set_trade_date(t.id, day).unwrap();
+        let t = repo.trade(t.id).unwrap();
+        let ny = jiff::tz::TimeZone::get("America/New_York").unwrap();
+        assert_eq!(trade_day(t, &ny), day, "not the 8th in New York");
+        assert_eq!(
+            trade_day(t, &jiff::tz::TimeZone::get("Asia/Tokyo").unwrap()),
+            day
+        );
+        assert_eq!(repo.key(k.id).unwrap().status_date, Some(day));
+        // A real moment reads in the given zone.
+        let mut live = Trade::new();
+        live.created_at = "2025-03-09T03:00:00Z".parse().unwrap();
+        assert_eq!(trade_day(&live, &ny), jiff::civil::date(2025, 3, 8));
+    }
     use crate::data::VaultData;
     use crate::model::TradeSite;
     use jiff::civil::date;

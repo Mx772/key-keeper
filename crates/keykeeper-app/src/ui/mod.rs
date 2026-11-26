@@ -10,6 +10,7 @@ mod grid;
 mod import;
 mod library;
 mod lock;
+mod match_review;
 mod row_menu;
 mod settings;
 mod shell;

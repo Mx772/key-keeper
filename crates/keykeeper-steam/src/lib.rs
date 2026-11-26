@@ -21,7 +21,7 @@ pub mod http;
 pub mod matching;
 
 pub use api::{AppMatch, ProfileRef, Review, Steam, SteamApi, parse_profile_input};
-pub use deals::{GgBatch, GgPrices, ItadPrices, Price, ShopDeal};
+pub use deals::{GgBatch, GgPrices, ItadBatch, ItadPrices, Price, ShopDeal};
 pub use details::StoreDetails;
 pub use http::{Http, UreqHttp};
 pub use matching::{MatchOutcome, best_match, normalize_title};
@@ -51,3 +51,32 @@ pub enum SteamError {
 }
 
 pub type Result<T> = std::result::Result<T, SteamError>;
+
+/// Reports a long fetch's progress: items finished, and what it is doing right now (for
+/// example waiting out a rate limit). Called from the fetching thread.
+pub trait Progress: Sync {
+    fn advance(&self, _n: usize) {}
+    fn note(&self, _what: &str) {}
+}
+
+/// Progress that goes nowhere.
+pub struct NoProgress;
+
+impl Progress for NoProgress {}
+
+/// What a batched fetch got before it stopped. `error` is why it stopped early (the items
+/// fetched before that are kept); it is `None` when every batch succeeded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Partial<T> {
+    pub items: Vec<T>,
+    pub error: Option<SteamError>,
+}
+
+impl<T> Default for Partial<T> {
+    fn default() -> Self {
+        Partial {
+            items: Vec::new(),
+            error: None,
+        }
+    }
+}

@@ -18,6 +18,7 @@ rune-theme-opencode = { workspace = true }
 keykeeper-core = { workspace = true }
 keykeeper-steam = { workspace = true }
 directories = "6.0.0"
+log = { version = "0.4.35", features = ["std"] }
 toml = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 jiff = "1.0.3"

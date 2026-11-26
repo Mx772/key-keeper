@@ -1,6 +1,6 @@
 //! The right-hand pane for editing (or adding) one key.
 
-use keykeeper_core::{KeyStatus, Platform};
+use keykeeper_core::{KeyStatus, LabelField, Platform};
 use rune::{El, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, IconButton, Kit, Select, SelectAppearance, TextArea, TextInput,
@@ -33,6 +33,53 @@ fn input(
         .on_submit(|s: &mut AppState, _: &mut Tx| s.save_form())
         .build(k)
         .key(key)
+}
+
+/// Existing bundles or sources matching what's typed, as chips that fill the field.
+fn suggestions(sess: &Session, k: &Kit, field: LabelField, typed: &str) -> Option<El> {
+    let found = keykeeper_core::label_suggestions(sess.repo.keys(), field, typed, 6);
+    if found.is_empty() {
+        return None;
+    }
+    let slug = match field {
+        LabelField::Bundle => "bundle",
+        LabelField::Source => "source",
+    };
+    let mut r = row()
+        .key(format!("suggest-{slug}"))
+        .w_full()
+        .gap(6.0)
+        .flex_wrap();
+    for (i, v) in found.into_iter().enumerate() {
+        let value = v.clone();
+        r = r.child(
+            el().key(format!("suggest-{slug}-{i}"))
+                .role("button")
+                .label(format!("Use {v}"))
+                .focusable(true)
+                .h(24.0)
+                .px(10.0)
+                .radius(12.0)
+                .center()
+                .fill(k.c.surface_raised)
+                .border(1.0, k.c.border_weak)
+                .hover(k.c.surface_hover)
+                .cursor(rune::Cursor::Pointer)
+                .on_press(move |s: &mut AppState| {
+                    set_form(s, |f| match field {
+                        LabelField::Bundle => f.bundle.replace_text(&value),
+                        LabelField::Source => f.source.replace_text(&value),
+                    })
+                })
+                .child(
+                    text(v)
+                        .font(k.ty.text_small)
+                        .color(k.c.text_base)
+                        .a11y_hidden(),
+                ),
+        );
+    }
+    Some(r)
 }
 
 fn set_form(s: &mut AppState, f: impl FnOnce(&mut KeyForm)) {
@@ -202,21 +249,33 @@ pub fn view(
         .child(field(
             k,
             "Bundle",
-            input(k, "form-bundle", &form.bundle, "e.g. Humble Choice", |f| {
-                &mut f.bundle
-            }),
+            col()
+                .w_full()
+                .gap(6.0)
+                .child(input(
+                    k,
+                    "form-bundle",
+                    &form.bundle,
+                    "e.g. Humble Choice",
+                    |f| &mut f.bundle,
+                ))
+                .children(suggestions(sess, k, LabelField::Bundle, &form.bundle.text)),
             None,
         ))
         .child(field(
             k,
             "Source",
-            input(
-                k,
-                "form-source",
-                &form.source,
-                "Humble, Fanatical, Trade: …",
-                |f| &mut f.source,
-            ),
+            col()
+                .w_full()
+                .gap(6.0)
+                .child(input(
+                    k,
+                    "form-source",
+                    &form.source,
+                    "Humble, Fanatical, Trade: …",
+                    |f| &mut f.source,
+                ))
+                .children(suggestions(sess, k, LabelField::Source, &form.source.text)),
             None,
         ))
         .child(
@@ -239,7 +298,8 @@ pub fn view(
                             )
                             .child(super::datepick::button(
                                 k,
-                                form,
+                                form.date_pick,
+                                &form.status_date,
                                 "status_date",
                                 fmt,
                                 overlays,
@@ -262,7 +322,14 @@ pub fn view(
                                 })
                                 .grow(1.0),
                             )
-                            .child(super::datepick::button(k, form, "deadline", fmt, overlays)),
+                            .child(super::datepick::button(
+                                k,
+                                form.date_pick,
+                                &form.deadline,
+                                "deadline",
+                                fmt,
+                                overlays,
+                            )),
                         err("deadline"),
                     )
                     .grow(1.0),
