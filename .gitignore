@@ -2,3 +2,10 @@
 *.kkvault
 *.kkvault.bak*
 /scratch
+
+# Private planning material and personal examples (never commit)
+/idea.md
+/docs/PLAN.md
+/example_import.csv
+/excelExample.png
+/repExample.png

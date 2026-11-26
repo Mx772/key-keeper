@@ -312,7 +312,7 @@ mod tests {
     fn key_search_needs_five_characters() {
         let r = repo();
         assert_eq!(
-            names(&r, &Query::with_text("ha1ku-zd")),
+            names(&r, &Query::with_text("ha1ku-r0")),
             ["Haiku, the Robot"]
         );
         assert!(names(&r, &Query::with_text("ha1")).is_empty());

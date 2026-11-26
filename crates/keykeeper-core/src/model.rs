@@ -1,4 +1,4 @@
-//! The domain model (`docs/PLAN.md` §4). Every type here is stored inside the encrypted vault, so
+//! The domain model. Every type here is stored inside the encrypted vault, so
 //! serde names are part of the file format: **do not rename variants/fields without a migration.**
 
 use jiff::Timestamp;

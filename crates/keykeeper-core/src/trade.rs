@@ -1,4 +1,4 @@
-//! The trade lifecycle (PLAN §7) and template rendering for checkout and reputation text.
+//! The trade lifecycle and template rendering for checkout and reputation text.
 //!
 //! ```text
 //! Library ─add_to_cart─▶ Draft (the cart) ─send─▶ Pending ─complete─▶ Completed

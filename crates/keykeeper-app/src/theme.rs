@@ -1,7 +1,7 @@
 //! Theme presets. A theme is a `rune-kit` [`Kit`]: palette presets are seeded from three colours
 //! (`bg`, `fg`, `accent`) via [`Kit::from_palette`]; the rest reuse RUNE's built-in kits.
 //! The chosen [`ThemeId`] is a non-sensitive preference and is stored in `config.toml`
-//! (see `docs/PLAN.md` §5, §9).
+//!.
 
 use std::sync::OnceLock;
 

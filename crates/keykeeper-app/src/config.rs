@@ -1,4 +1,4 @@
-//! Non-sensitive preferences in `config.toml` (PLAN §5): vault location and theme.
+//! Non-sensitive preferences in `config.toml`: vault location and theme.
 //! Everything sensitive lives in the encrypted vault instead.
 
 use std::path::{Path, PathBuf};

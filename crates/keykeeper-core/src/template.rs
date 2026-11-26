@@ -1,4 +1,4 @@
-//! A tiny `{variable}` template engine for checkout lines and reputation posts (PLAN §7).
+//! A tiny `{variable}` template engine for checkout lines and reputation posts.
 //! `{{` and `}}` are literal braces. Unknown variables are errors so typos surface in the editor.
 
 use serde::{Deserialize, Serialize};

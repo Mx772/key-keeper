@@ -1,4 +1,4 @@
-//! Steam integration for KeyKeeper (PLAN §8).
+//! Steam integration for KeyKeeper.
 //!
 //! Endpoints (verified 2026-11-25):
 //! - App search: `store.steampowered.com/api/storesearch` (no key).

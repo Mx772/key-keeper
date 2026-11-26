@@ -1,4 +1,4 @@
-//! Importing keys (`docs/PLAN.md` §6).
+//! Importing keys from CSV/TSV files, spreadsheet pastes and plain-text lists.
 //!
 //! 1. [`parse`] raw input into a [`Table`] with a suggested column mapping.
 //! 2. The user may change `table.mapping` and the [`ImportOptions`].

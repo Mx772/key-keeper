@@ -58,7 +58,7 @@ pub fn parse_date(s: &str, format: DateFormat) -> Result<Option<Date>, String> {
         .map_err(|_| format!("'{t}' is not a valid date"))
 }
 
-/// How status cells map to [`KeyStatus`]. Defaults follow `docs/PLAN.md` §6.
+/// How status cells map to [`KeyStatus`]. Defaults: X/Yes/Redeemed + trade link = Traded, without a link = Redeemed, blank/No = Available.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusRules {
     /// A "done" mark (`X`, `Yes`, `Redeemed`, `1`, …) on a row that has a trade link.

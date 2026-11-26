@@ -8,7 +8,7 @@ pub fn gg_deals(app_id: u32) -> String {
     format!("https://gg.deals/steam/app/{app_id}/")
 }
 
-/// ITAD's redirect-by-Steam-id form. To be verified against the live site in Phase 5 (PLAN §4).
+/// ITAD's redirect-by-Steam-id form. To be verified against the live site in Phase 5.
 pub fn itad(app_id: u32) -> String {
     format!("https://isthereanydeal.com/steam/app/{app_id}/")
 }

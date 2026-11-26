@@ -1,4 +1,4 @@
-//! The encrypted vault file (`docs/PLAN.md` §5).
+//! The encrypted vault file.
 //!
 //! A password-derived KEK (Argon2id) wraps a random 256-bit DEK; the DEK encrypts the JSON payload.
 //! Both use XChaCha20-Poly1305 with random 192-bit nonces. Changing the password re-wraps the DEK;
