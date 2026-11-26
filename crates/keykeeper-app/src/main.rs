@@ -15,6 +15,7 @@ mod config;
 mod demo;
 mod form;
 mod info;
+mod library_actions;
 mod price_actions;
 mod selftest;
 mod steam_actions;
@@ -83,6 +84,14 @@ const SCENES: &[Scene] = &[
                 since: 0.0,
                 open: true,
             });
+        }
+    }),
+    ("row-menu", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| x.rows.get(4).copied());
+        if let Some(id) = id {
+            s.open_row_menu(id, Some(rune::PointerPress { x: 520.0, y: 380.0 }));
+            s.set_row_menu_status_open(true);
         }
     }),
     ("cart-button", |s| {

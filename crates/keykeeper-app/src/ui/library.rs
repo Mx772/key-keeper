@@ -167,7 +167,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     if total == 0 {
         page = page.child(empty_state(k));
     } else {
-        page = page.child(table(s, sess, k));
+        page = page.child(table(s, sess, k, overlays).grow(1.0).min_h(0.0));
     }
     if let Some(id) = s.hover_card_key()
         && let Some(key) = sess.repo.key(id)
@@ -425,7 +425,7 @@ fn parse_id(id: &str) -> Option<Uuid> {
     Uuid::parse_str(id).ok()
 }
 
-fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
+fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
     let kc = k.clone();
     let fmt = sess.date_format();
     let today = today();
@@ -572,14 +572,16 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
         let Some(id) = s.session().and_then(|x| x.rows.get(i).copied()) else {
             return row_el;
         };
-        row_el.on_secondary_press(move |s: &mut AppState, _, tx| s.copy_key(id, tx))
+        row_el.on_secondary_press(move |s: &mut AppState, p, _| s.open_row_menu(id, Some(p)))
     })
     .zebra(true)
     .build(state, k)
     .grow(1.0)
     .min_h(0.0);
-    col()
+    let frame = col()
         .key("table-frame")
+        // Before the table's own keys: the menu keys.
+        .on_key_preview(|s: &mut AppState, ev, tx: &mut Tx| s.table_key_preview(ev, tx))
         .w_full()
         .grow(1.0)
         .min_h(0.0)
@@ -587,5 +589,6 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .border(1.0, k.c.border_weak)
         .clip_rounded(k.radius.lg)
-        .child(s_view)
+        .child(s_view);
+    super::row_menu::wrap(sess, frame, k, overlays)
 }

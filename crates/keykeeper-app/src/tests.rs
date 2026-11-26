@@ -1982,3 +1982,201 @@ fn hover_cards_can_be_turned_off_and_fetching_can_be_refused() {
     assert!(downloads.lock().unwrap().is_empty(), "nothing fetched");
     assert!(rt.state.session().unwrap().repo.data().app_info.is_empty());
 }
+
+// ── row menu and keyboard ─────────────────────────────────────────────────────────────────────
+
+fn right_click(rt: &mut Runtime<AppState>, key: &str) {
+    let (x, y) = rt
+        .find(key)
+        .unwrap_or_else(|| panic!("no element '{key}' on screen"));
+    rt.secondary_down(x, y);
+    rt.secondary_up(x, y);
+    rt.frame(1.0 / 60.0);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+}
+
+#[test]
+fn right_click_menu_acts_on_the_row_or_the_selection() {
+    let mut rt = demo_rt();
+    let (a, b) = {
+        let s = rt.state.session().unwrap();
+        let avail: Vec<_> = s
+            .rows
+            .iter()
+            .copied()
+            .filter(|id| {
+                let k = s.repo.key(*id).unwrap();
+                k.status == KeyStatus::Available && k.steam_app_id.is_some()
+            })
+            .collect();
+        (avail[0], avail[1])
+    };
+    right_click(&mut rt, &format!("name-{a}"));
+    assert!(rt.find("menu-edit").is_some(), "single-key menu");
+    assert!(rt.find("menu-link-steam").is_some());
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .table
+            .is_selected(&a.to_string())
+    );
+    click(&mut rt, "menu-cart");
+    rt.frame(1.0 / 60.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.row_menu.is_none(), "choosing closes the menu");
+    assert!(s.in_cart(a));
+
+    // With two rows selected, the menu acts on both.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(b.to_string());
+    });
+    rt.update(|s, _| s.set_status(&[b], KeyStatus::Available));
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.clear_selection();
+    });
+    let c = rt
+        .state
+        .session()
+        .unwrap()
+        .rows
+        .iter()
+        .copied()
+        .find(|id| *id != a && *id != b)
+        .unwrap();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(b.to_string());
+    });
+    rt.frame(1.0 / 60.0);
+    // Shift-extend the selection in state, as a shift-click would.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let ids = vec![b, c];
+        x.row_menu = None;
+        x.table.clear_selection();
+        for id in &ids {
+            x.table.select(id.to_string());
+        }
+    });
+    rt.update(|s, _| s.open_row_menu(b, None));
+    rt.frame(1.0 / 60.0);
+    let menu_ids = rt
+        .state
+        .session()
+        .unwrap()
+        .row_menu
+        .as_ref()
+        .unwrap()
+        .ids
+        .clone();
+    assert!(menu_ids.contains(&b));
+    rt.update(|s, _| s.close_row_menu());
+
+    right_click(&mut rt, &format!("name-{b}"));
+    click(&mut rt, "menu-delete");
+    assert!(matches!(
+        rt.state.session().unwrap().confirm,
+        Some(Confirm::DeleteKeys(_))
+    ));
+    rt.key(KeyEvent::from(Key::Escape));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().confirm.is_none());
+}
+
+#[test]
+fn status_submenu_and_keyboard_menu() {
+    let mut rt = demo_rt();
+    let id = rt.state.session().unwrap().rows[0];
+    rt.update(|s, _| {
+        s.session_mut().unwrap().table.select(id.to_string());
+    });
+    rt.key(KeyEvent::from(Key::ContextMenu));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(
+        rt.find("menu-status").is_some(),
+        "Menu key opens the row menu"
+    );
+    rt.update(|s, _| s.set_row_menu_status_open(true));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "menu-status-gifted");
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.repo.key(id).unwrap().status, KeyStatus::Gifted);
+    assert!(s.row_menu.is_none());
+}
+
+fn key(k: Key) -> KeyEvent {
+    KeyEvent {
+        key: k,
+        mods: Mods::default(),
+    }
+}
+
+#[test]
+fn arrows_ctrl_b_and_ctrl_c_drive_the_library() {
+    let mut rt = demo_rt();
+    let rows = rt.state.session().unwrap().rows.clone();
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.session().unwrap().cursor_id(), Some(rows[0]));
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(key(Key::Up));
+    rt.frame(1.0 / 60.0);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.cursor_id(), Some(rows[1]));
+    assert_eq!(
+        s.form.as_ref().and_then(|f| f.target),
+        Some(rows[1]),
+        "opens like a click"
+    );
+
+    // An available key: Ctrl+Enter puts it in the cart, and again takes it out.
+    let id = {
+        let s = rt.state.session().unwrap();
+        *rows
+            .iter()
+            .find(|id| s.repo.key(**id).unwrap().status == KeyStatus::Available)
+            .unwrap()
+    };
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('b'));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().in_cart(id));
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('b'));
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.state.session().unwrap().in_cart(id));
+
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('c'));
+    rt.frame(1.0 / 60.0);
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.starts_with("Copied key"))
+    );
+
+    rt.key(key(Key::Function(2)));
+    rt.frame(1.0 / 60.0);
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .form
+            .as_ref()
+            .and_then(|f| f.target),
+        Some(id)
+    );
+}

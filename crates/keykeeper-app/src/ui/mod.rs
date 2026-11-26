@@ -7,6 +7,7 @@ mod detail;
 mod import;
 mod library;
 mod lock;
+mod row_menu;
 mod settings;
 mod shell;
 mod shortcuts;

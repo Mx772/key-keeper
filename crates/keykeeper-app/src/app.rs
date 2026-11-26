@@ -177,6 +177,8 @@ pub struct Session {
     pub form: Option<KeyForm>,
     pub confirm: Option<Confirm>,
     pub bulk_status_open: bool,
+    /// The right-click menu on library rows.
+    pub row_menu: Option<crate::library_actions::RowMenu>,
     /// The keyboard shortcuts overlay.
     pub shortcuts_open: bool,
     // other pages
@@ -232,6 +234,7 @@ impl Session {
             form: None,
             confirm: None,
             bulk_status_open: false,
+            row_menu: None,
             shortcuts_open: false,
             import: ImportUi::new(date_format),
             settings_ui: SettingsUi::default(),
@@ -770,6 +773,7 @@ impl AppState {
             s.sync_trade_form();
             s.page = page;
             s.bulk_status_open = false;
+            s.row_menu = None;
             s.refresh_trade_form();
         }
     }
@@ -1272,6 +1276,9 @@ impl AppState {
             return false;
         }
         let ctrl = e.mods.cmd || e.mods.ctrl;
+        if self.library_key(e, tx) {
+            return true;
+        }
         match &e.key {
             rune::Key::Command(c) if ctrl => match c.to_ascii_lowercase() {
                 'f' => {
@@ -1343,6 +1350,7 @@ impl AppState {
                     return false;
                 };
                 if std::mem::take(&mut s.shortcuts_open)
+                    || s.row_menu.take().is_some()
                     || s.confirm.take().is_some()
                     || s.bulk_status_open
                     || s.form.take().is_some()
