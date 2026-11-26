@@ -1,0 +1,21 @@
+[package]
+name = "keykeeper-app"
+description = "KeyKeeper desktop app (RUNE GUI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "keykeeper"
+path = "src/main.rs"
+
+[dependencies]
+rune = { workspace = true }
+rune-kit = { workspace = true }
+rune-theme-opencode = { workspace = true }
+keykeeper-core = { workspace = true }
+
+[lints]
+workspace = true

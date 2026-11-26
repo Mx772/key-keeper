@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    # RUNE is a pinned git rev; bump it deliberately, not via Dependabot.
+    ignore:
+      - dependency-name: "rune*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

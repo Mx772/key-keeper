@@ -1,0 +1,4 @@
+/target
+*.kkvault
+*.kkvault.bak*
+/scratch

@@ -1,0 +1,4 @@
+# Matches RUNE's pinned toolchain at the rev in Cargo.toml. Bump together.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

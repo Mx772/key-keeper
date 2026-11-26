@@ -1,0 +1,13 @@
+[package]
+name = "keykeeper-steam"
+description = "Steam store / community clients for KeyKeeper (behind traits so tests use recorded fixtures)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true
