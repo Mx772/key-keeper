@@ -1,4 +1,4 @@
-//! Non-sensitive preferences in `config.toml`: vault location and theme.
+//! Non-sensitive preferences in `config.toml`: vault location, theme and update checks.
 //! Everything sensitive lives in the encrypted vault instead.
 
 use std::path::{Path, PathBuf};
@@ -13,6 +13,10 @@ use crate::theme::ThemeId;
 pub struct Config {
     pub vault_path: Option<PathBuf>,
     pub theme: Option<String>,
+    /// "Check for updates automatically". `None` means on.
+    pub check_updates: Option<bool>,
+    /// A version the user chose to skip ("Skip this version").
+    pub skipped_version: Option<String>,
 }
 
 fn dirs() -> Option<ProjectDirs> {
@@ -55,6 +59,10 @@ impl Config {
             .unwrap_or_default()
     }
 
+    pub fn check_updates(&self) -> bool {
+        self.check_updates.unwrap_or(true)
+    }
+
     pub fn vault_path(&self) -> PathBuf {
         self.vault_path
             .clone()
@@ -72,15 +80,22 @@ mod tests {
         let path = dir.path().join("nested").join("config.toml");
         assert_eq!(Config::load(&path), Config::default());
         assert_eq!(Config::default().theme(), ThemeId::Midnight);
+        assert!(
+            Config::default().check_updates(),
+            "update checks default to on"
+        );
 
         let c = Config {
             vault_path: Some(dir.path().join("v.kkvault")),
             theme: Some("forest".into()),
+            check_updates: Some(false),
+            skipped_version: Some("0.2.0".into()),
         };
         c.save(&path).unwrap();
         let back = Config::load(&path);
         assert_eq!(back, c);
         assert_eq!(back.theme(), ThemeId::Forest);
+        assert!(!back.check_updates());
     }
 
     #[test]

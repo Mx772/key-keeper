@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "notes": "## What's new\n\n- Example release notes for the manifest parsing test.\n",
+  "pub_date": "2026-11-25T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://github.com/Mx772/key-keeper/releases/download/v0.2.0/KeyKeeper_0.2.0_x64-setup.exe",
+      "signature": "c2lnbmF0dXJlIHBsYWNlaG9sZGVyIGZvciB0aGUgcGFyc2luZyB0ZXN0",
+      "format": "nsis"
+    },
+    "macos-aarch64": {
+      "url": "https://github.com/Mx772/key-keeper/releases/download/v0.2.0/KeyKeeper_0.2.0_aarch64.app.tar.gz",
+      "signature": "c2lnbmF0dXJlIHBsYWNlaG9sZGVyIGZvciB0aGUgcGFyc2luZyB0ZXN0",
+      "format": "app"
+    },
+    "macos-x86_64": {
+      "url": "https://github.com/Mx772/key-keeper/releases/download/v0.2.0/KeyKeeper_0.2.0_x64.app.tar.gz",
+      "signature": "c2lnbmF0dXJlIHBsYWNlaG9sZGVyIGZvciB0aGUgcGFyc2luZyB0ZXN0",
+      "format": "app"
+    }
+  }
+}

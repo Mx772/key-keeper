@@ -21,6 +21,7 @@ use crate::form::KeyForm;
 use crate::steam_actions::{Candidates, Job, JobSlot, SteamUi};
 use crate::theme::ThemeId;
 use crate::trade_actions::{TemplatesUi, TradeForm};
+use crate::update_actions::Updates;
 use keykeeper_steam::SteamApi;
 
 /// Unsaved changes reach disk this long after the last edit.
@@ -324,7 +325,8 @@ pub enum Screen {
     Unlocked(Box<Session>),
 }
 
-type UnlockResult = Result<(Vault, VaultData), VaultError>;
+/// The opened vault, its data, and the pre-upgrade backup written on the way (if any).
+type UnlockResult = Result<(Vault, VaultData, Option<PathBuf>), VaultError>;
 
 pub struct AppState {
     pub config: Config,
@@ -345,6 +347,8 @@ pub struct AppState {
     pub steam: Arc<dyn SteamApi>,
     pub(crate) jobs: JobSlot,
     pub job: Option<Job>,
+    /// Update checks and installs (the source is a fake in tests).
+    pub updates: Updates,
 }
 
 pub fn today() -> Date {
@@ -372,6 +376,7 @@ impl AppState {
             steam: Arc::new(keykeeper_steam::Steam::new(keykeeper_steam::UreqHttp::new())),
             jobs: Arc::new(Mutex::new(Vec::new())),
             job: None,
+            updates: Updates::new(crate::update::real_source()),
         }
     }
 
@@ -407,7 +412,7 @@ impl AppState {
         matches!(self.screen, Screen::Unlocked(_))
     }
 
-    fn save_config(&mut self) {
+    pub(crate) fn save_config(&mut self) {
         if let Some(p) = &self.config_path
             && let Err(e) = self.config.save(p)
         {
@@ -419,6 +424,10 @@ impl AppState {
 
     pub fn toast(&mut self, title: impl Into<String>) {
         self.push_toast(title.into(), None, false);
+    }
+
+    pub fn toast_detail(&mut self, title: impl Into<String>, detail: impl Into<String>) {
+        self.push_toast(title.into(), Some(detail.into()), false);
     }
 
     pub fn toast_error(&mut self, title: impl Into<String>, detail: impl Into<String>) {
@@ -501,15 +510,26 @@ impl AppState {
         let (path, mode) = (l.path.clone(), l.mode);
         let work = move || {
             let result = match mode {
-                LockMode::Unlock => Vault::open(&path, &password),
+                LockMode::Unlock => Vault::open(&path, &password).and_then(|(vault, mut data)| {
+                    // Before anything is saved: keep the file as the previous version left it.
+                    let backup = keykeeper_core::upgrade::backup_before_upgrade(
+                        &vault,
+                        &mut data,
+                        env!("CARGO_PKG_VERSION"),
+                    )?;
+                    Ok((vault, data, backup))
+                }),
                 LockMode::Create => {
                     if let Some(dir) = path.parent()
                         && let Err(e) = std::fs::create_dir_all(dir)
                     {
                         Err(VaultError::Io(e))
                     } else {
-                        let data = VaultData::default();
-                        Vault::create(&path, &password, kdf, &data).map(|v| (v, data))
+                        let data = VaultData {
+                            last_app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                            ..VaultData::default()
+                        };
+                        Vault::create(&path, &password, kdf, &data).map(|v| (v, data, None))
                     }
                 }
             };
@@ -537,9 +557,16 @@ impl AppState {
             return false;
         };
         match result {
-            Ok((vault, data)) => {
+            Ok((vault, data, backup)) => {
                 let path = vault.path().to_path_buf();
                 self.open_session(vault, data);
+                if let Some(b) = backup {
+                    let name = b.file_name().map(|n| n.to_string_lossy().to_string());
+                    self.toast_detail(
+                        "Saved a copy of your vault from before this update",
+                        name.unwrap_or_default(),
+                    );
+                }
                 if self.config.vault_path.as_ref() != Some(&path) {
                     self.config.vault_path = Some(path);
                     self.save_config();
@@ -594,6 +621,7 @@ impl AppState {
         self.now = now;
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
+        changed |= self.poll_updates(now, tx);
         if self.job.is_some() {
             tx.wake_after(Duration::from_millis(250));
             changed = true; // progress text

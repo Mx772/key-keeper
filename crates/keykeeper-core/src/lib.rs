@@ -12,6 +12,7 @@ pub mod repo;
 pub mod secret;
 pub mod template;
 pub mod trade;
+pub mod upgrade;
 pub mod vault;
 
 pub use data::VaultData;

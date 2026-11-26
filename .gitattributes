@@ -3,3 +3,4 @@
 crates/keykeeper-core/tests/fixtures/** -text
 *.ico binary
 *.icns binary
+crates/keykeeper-app/tests/fixtures/** -text

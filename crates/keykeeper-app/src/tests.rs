@@ -16,9 +16,12 @@ const SIZE: (f32, f32) = (1280.0, 800.0);
 fn state_for(vault: &Path) -> AppState {
     let config = Config {
         vault_path: Some(vault.to_path_buf()),
-        theme: None,
+        ..Config::default()
     };
-    AppState::new(config, None, KdfParams::INSECURE_FAST_FOR_TESTS)
+    let mut s = AppState::new(config, None, KdfParams::INSECURE_FAST_FOR_TESTS);
+    // Tests never talk to GitHub.
+    s.updates.source = std::sync::Arc::new(crate::update::NoUpdates);
+    s
 }
 
 fn runtime(s: AppState) -> Runtime<AppState> {
@@ -1116,5 +1119,332 @@ fn ratings_respect_the_cache_unless_forced() {
             .unwrap()
             .fetched_at
             >= first.fetched_at
+    );
+}
+
+// ── updates ──────────────────────────────────────────────────────────────────────────────────
+
+use crate::update::{Release, STARTUP_DELAY_SECS, UpdateError, UpdateSource};
+use crate::update_actions::{CheckStatus, Phase};
+use std::sync::{Arc, Mutex};
+
+/// Scripted update source; records installs instead of running anything.
+struct FakeUpdates {
+    latest: Mutex<Result<Release, UpdateError>>,
+    download: Result<Vec<u8>, UpdateError>,
+    installed: Mutex<Vec<(String, Vec<u8>)>>,
+    checks: Mutex<u32>,
+}
+
+impl FakeUpdates {
+    fn offering(version: &str) -> Arc<FakeUpdates> {
+        Arc::new(FakeUpdates {
+            latest: Mutex::new(Ok(release(version))),
+            download: Ok(b"installer bytes".to_vec()),
+            installed: Mutex::new(Vec::new()),
+            checks: Mutex::new(0),
+        })
+    }
+}
+
+fn release(version: &str) -> Release {
+    Release::new(
+        semver::Version::parse(version).unwrap(),
+        "## Notes\n- Something new",
+    )
+}
+
+impl UpdateSource for FakeUpdates {
+    fn latest(&self) -> Result<Release, UpdateError> {
+        *self.checks.lock().unwrap() += 1;
+        self.latest.lock().unwrap().clone()
+    }
+    fn download(
+        &self,
+        _: &Release,
+        progress: &(dyn Fn(u64, Option<u64>) + Sync),
+    ) -> Result<Vec<u8>, UpdateError> {
+        progress(15, Some(15));
+        self.download.clone()
+    }
+    fn install(&self, r: &Release, bytes: Vec<u8>) -> Result<(), UpdateError> {
+        self.installed
+            .lock()
+            .unwrap()
+            .push((r.version.to_string(), bytes));
+        Ok(())
+    }
+}
+
+/// A demo session (unlocked) with `src` as the update source and a real config file.
+fn update_rt(src: Arc<FakeUpdates>, dir: &Path) -> Runtime<AppState> {
+    let mut s = state_for(&dir.join("unused.kkvault"));
+    s.config_path = Some(dir.join("config.toml"));
+    demo::unlock(&mut s, demo::sample_data());
+    s.updates.source = src;
+    s.updates.current = semver::Version::new(0, 1, 0);
+    runtime(s)
+}
+
+/// Poll until background update work is done.
+fn settle_updates(rt: &mut Runtime<AppState>, now: f64) {
+    let start = Instant::now();
+    loop {
+        poll(rt, now);
+        let u = &rt.state.updates;
+        if !u.checking && !matches!(u.phase, Phase::Downloading { .. }) {
+            poll(rt, now);
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "update work hung"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn automatic_check_shows_banner_then_later_and_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = FakeUpdates::offering("0.2.0");
+    let mut rt = update_rt(src.clone(), dir.path());
+
+    settle_updates(&mut rt, 1.0);
+    assert_eq!(*src.checks.lock().unwrap(), 0, "no check right at startup");
+    assert!(rt.find("update-banner").is_none());
+
+    settle_updates(&mut rt, STARTUP_DELAY_SECS + 0.1);
+    assert_eq!(*src.checks.lock().unwrap(), 1);
+    assert!(rt.find("update-banner").is_some(), "banner after the check");
+    assert!(rt.state.is_unlocked(), "non-modal: nothing else changed");
+
+    // What's new opens the notes; Close shuts them.
+    click(&mut rt, "update-notes");
+    assert!(rt.find("update-notes-text").is_some());
+    click(&mut rt, "update-notes-close");
+    assert!(rt.find("update-notes-text").is_none());
+
+    // Later hides it, also across later automatic checks.
+    click(&mut rt, "update-later");
+    assert!(rt.find("update-banner").is_none());
+    settle_updates(
+        &mut rt,
+        STARTUP_DELAY_SECS + crate::update::CHECK_INTERVAL_SECS + 1.0,
+    );
+    assert_eq!(*src.checks.lock().unwrap(), 2, "checks again a day later");
+    assert!(
+        rt.find("update-banner").is_none(),
+        "Later lasts until relaunch"
+    );
+
+    // "Check now" brings it back.
+    rt.update(|s, _| s.go(Page::Settings));
+    rt.update(|s, _| s.check_for_updates(true));
+    settle_updates(&mut rt, 1.0e6);
+    assert!(rt.find("update-banner").is_some());
+
+    // Skip persists in config.toml and survives automatic checks.
+    click(&mut rt, "update-skip");
+    assert!(rt.find("update-banner").is_none());
+    assert_eq!(rt.state.config.skipped_version.as_deref(), Some("0.2.0"));
+    let saved = Config::load(&dir.path().join("config.toml"));
+    assert_eq!(saved.skipped_version.as_deref(), Some("0.2.0"));
+    rt.update(|s, _| s.check_for_updates(false));
+    settle_updates(&mut rt, 1.0e6);
+    assert!(rt.find("update-banner").is_none());
+    assert!(matches!(rt.state.updates.status, CheckStatus::Skipped(_)));
+
+    // A newer version than the skipped one is offered again.
+    *src.latest.lock().unwrap() = Ok(release("0.3.0"));
+    rt.update(|s, _| s.check_for_updates(false));
+    settle_updates(&mut rt, 1.0e6);
+    assert!(rt.find("update-banner").is_some());
+}
+
+#[test]
+fn same_or_older_versions_are_not_offered() {
+    let dir = tempfile::tempdir().unwrap();
+    for v in ["0.1.0", "0.0.9", "0.2.0-beta.1"] {
+        let mut rt = update_rt(FakeUpdates::offering(v), dir.path());
+        rt.update(|s, _| s.check_for_updates(true));
+        settle_updates(&mut rt, 0.0);
+        assert!(rt.find("update-banner").is_none(), "{v}");
+        assert_eq!(rt.state.updates.status, CheckStatus::UpToDate, "{v}");
+    }
+}
+
+#[test]
+fn check_errors_are_silent_unless_manual() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = FakeUpdates::offering("0.2.0");
+    *src.latest.lock().unwrap() = Err(UpdateError::Network("offline".into()));
+    let mut rt = update_rt(src.clone(), dir.path());
+    rt.update(|s, _| {
+        s.go(Page::Settings);
+        s.toasts.clear();
+    });
+
+    settle_updates(&mut rt, STARTUP_DELAY_SECS + 1.0);
+    assert_eq!(*src.checks.lock().unwrap(), 1);
+    assert!(rt.state.toasts.is_empty(), "automatic failure: no toast");
+    assert_eq!(rt.state.updates.status, CheckStatus::NotChecked);
+    assert!(rt.find("update-banner").is_none());
+
+    // "Check now" in Settings (tall window: the card is at the bottom).
+    let mut rt = {
+        let mut s = state_for(&dir.path().join("unused.kkvault"));
+        demo::unlock(&mut s, demo::sample_data());
+        s.updates.source = src;
+        s.go(Page::Settings);
+        runtime_sized(s, TALL)
+    };
+    click(&mut rt, "update-check");
+    settle_updates(&mut rt, 0.0);
+    assert!(
+        matches!(&rt.state.updates.status, CheckStatus::Failed(m) if m.contains("offline")),
+        "{:?}",
+        rt.state.updates.status
+    );
+    assert!(rt.find("update-status").is_some());
+}
+
+#[test]
+fn turning_automatic_checks_off_stops_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = FakeUpdates::offering("0.2.0");
+    let mut s = state_for(&dir.path().join("unused.kkvault"));
+    s.config_path = Some(dir.path().join("config.toml"));
+    demo::unlock(&mut s, demo::sample_data());
+    s.updates.source = src.clone();
+    s.go(Page::Settings);
+    let mut rt = runtime_sized(s, TALL);
+    click(&mut rt, "update-auto");
+    assert!(!rt.state.config.check_updates());
+    assert_eq!(
+        Config::load(&dir.path().join("config.toml")).check_updates,
+        Some(false)
+    );
+    settle_updates(&mut rt, 1.0e6);
+    assert_eq!(*src.checks.lock().unwrap(), 0);
+}
+
+#[test]
+fn update_saves_the_vault_downloads_installs_and_quits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kkvault");
+    let mut s = state_for(&path);
+    let v = Vault::create(
+        &path,
+        "pw",
+        KdfParams::INSECURE_FAST_FOR_TESTS,
+        &VaultData::default(),
+    )
+    .unwrap();
+    s.open_session(v, VaultData::default());
+    let src = FakeUpdates::offering("0.2.0");
+    s.updates.source = src.clone();
+    s.updates.current = semver::Version::new(0, 1, 0);
+    let mut rt = runtime(s);
+    rt.update(|s, _| s.check_for_updates(true));
+    settle_updates(&mut rt, 0.0);
+
+    // An unsaved change, well before autosave would write it.
+    rt.update(|s, _| s.import_text("t", "Hades: HD5S2-77KLM-NB3VC\n"));
+    rt.update(|s, _| s.commit_import());
+    assert!(rt.state.session().unwrap().is_dirty());
+
+    click(&mut rt, "update-install");
+    assert!(
+        !rt.state.session().unwrap().is_dirty(),
+        "saved before downloading"
+    );
+    let (_, on_disk) = Vault::open(&path, "pw").unwrap();
+    assert_eq!(on_disk.keys.len(), 1);
+
+    settle_updates(&mut rt, 0.0);
+    let installed = src.installed.lock().unwrap().clone();
+    assert_eq!(
+        installed,
+        [("0.2.0".to_string(), b"installer bytes".to_vec())]
+    );
+    assert!(matches!(rt.state.updates.phase, Phase::Installing));
+    assert!(
+        rt.shell_request.is_some(),
+        "the app quits for the installer"
+    );
+}
+
+#[test]
+fn bad_signature_is_refused_and_explained() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = Arc::new(FakeUpdates {
+        latest: Mutex::new(Ok(release("0.2.0"))),
+        download: Err(UpdateError::BadSignature("signature mismatch".into())),
+        installed: Mutex::new(Vec::new()),
+        checks: Mutex::new(0),
+    });
+    let mut rt = update_rt(src.clone(), dir.path());
+    rt.update(|s, _| s.check_for_updates(true));
+    settle_updates(&mut rt, 0.0);
+    click(&mut rt, "update-install");
+    settle_updates(&mut rt, 0.0);
+    assert!(src.installed.lock().unwrap().is_empty(), "never installed");
+    assert!(rt.shell_request.is_none(), "still running");
+    assert!(
+        matches!(&rt.state.updates.phase, Phase::Failed(m) if m.contains("not installed")),
+        "{:?}",
+        rt.state.updates.phase
+    );
+    assert!(rt.find("update-retry").is_some());
+    click(&mut rt, "update-dismiss");
+    assert!(matches!(rt.state.updates.phase, Phase::Idle));
+}
+
+#[test]
+fn banner_shows_on_the_lock_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state_for(&dir.path().join("v.kkvault"));
+    s.updates.source = FakeUpdates::offering("9.0.0");
+    let mut rt = runtime(s);
+    rt.update(|s, _| s.check_for_updates(true));
+    settle_updates(&mut rt, 0.0);
+    assert!(rt.find("lock-submit").is_some());
+    assert!(rt.find("update-banner").is_some());
+}
+
+#[test]
+fn unlocking_with_a_newer_app_writes_the_pre_upgrade_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v.kkvault");
+    let data = VaultData {
+        last_app_version: Some("0.0.1".into()),
+        ..VaultData::default()
+    };
+    Vault::create(
+        &path,
+        "correct horse",
+        KdfParams::INSECURE_FAST_FOR_TESTS,
+        &data,
+    )
+    .unwrap();
+    let original = std::fs::read(&path).unwrap();
+    let mut rt = runtime(state_for(&path));
+    rt.update(|s, _| s.lock_ui_mut().unwrap().password = TextEdit::new("correct horse"));
+    click(&mut rt, "lock-submit");
+    wait_for_unlock_result(&mut rt);
+    assert!(rt.state.is_unlocked());
+    let backup = keykeeper_core::upgrade::pre_upgrade_path(&path, env!("CARGO_PKG_VERSION"));
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.contains("before this update"))
+    );
+    let (_, on_disk) = Vault::open(&path, "correct horse").unwrap();
+    assert_eq!(
+        on_disk.last_app_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
     );
 }

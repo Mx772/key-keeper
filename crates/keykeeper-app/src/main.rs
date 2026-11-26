@@ -3,15 +3,20 @@
 //! `cargo run -p keykeeper-app` opens the app. Screenshots of each screen with demo data:
 //! `cargo run -p keykeeper-app -- --snap target/library.png --scene library --size 1280x800`
 //! (scenes: see `SCENES`).
+//!
+//! `keykeeper --self-test` is internal: a headless smoke test for release builds (`selftest.rs`).
 
 mod app;
 mod config;
 mod demo;
 mod form;
+mod selftest;
 mod steam_actions;
 mod theme;
 mod trade_actions;
 mod ui;
+mod update;
+mod update_actions;
 
 #[cfg(test)]
 mod tests;
@@ -102,6 +107,19 @@ const SCENES: &[Scene] = &[
     ("empty", |s| {
         demo::unlock(s, keykeeper_core::VaultData::default())
     }),
+    ("update", |s| {
+        demo::unlock(s, demo::sample_data());
+        demo::offer_update(s);
+    }),
+    ("update-notes", |s| {
+        demo::unlock(s, demo::sample_data());
+        demo::offer_update(s);
+        s.show_update_notes(true);
+    }),
+    ("update-lock", |s| {
+        s.set_lock_mode(LockMode::Unlock);
+        demo::offer_update(s);
+    }),
     ("light", |s| {
         s.theme = ThemeId::Light;
         demo::unlock(s, demo::sample_data());
@@ -124,6 +142,10 @@ fn set_icon() {
 fn set_icon() {}
 
 fn main() {
+    // Internal: the release workflow's smoke test (see `selftest.rs`). Not a user feature.
+    if std::env::args().skip(1).any(|a| a == selftest::FLAG) {
+        std::process::exit(selftest::run());
+    }
     set_icon();
     let theme = config::Config::default_path()
         .map(|p| config::Config::load(&p))

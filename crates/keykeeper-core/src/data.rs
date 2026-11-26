@@ -23,6 +23,11 @@ pub struct VaultData {
     pub api_keys: ApiKeys,
     #[serde(default)]
     pub templates: Templates,
+    /// The newest KeyKeeper version that has opened this vault (e.g. `"0.2.0"`). `None` for
+    /// vaults last opened before this was recorded. Drives the pre-upgrade backup
+    /// ([`crate::upgrade`]).
+    #[serde(default)]
+    pub last_app_version: Option<String>,
 }
 
 impl Default for VaultData {
@@ -34,6 +39,7 @@ impl Default for VaultData {
             settings: Settings::default(),
             api_keys: ApiKeys::default(),
             templates: Templates::default(),
+            last_app_version: None,
         }
     }
 }

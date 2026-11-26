@@ -1,4 +1,4 @@
-//! Settings: appearance, dates, security, password, export.
+//! Settings: appearance, dates, security, password, export, updates.
 
 use keykeeper_core::DateFormat;
 use rune::{El, ScrollSpec, Tx, col, el, row, text};
@@ -371,6 +371,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(templates)
                 .child(steam)
                 .child(security)
-                .child(export),
+                .child(export)
+                .child(super::update::settings_card(s, k)),
         )
 }

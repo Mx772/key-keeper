@@ -267,4 +267,23 @@ pub fn unlock(s: &mut AppState, data: VaultData) {
     ) {
         s.open_session(v, data);
     }
+    // Demo state never talks to GitHub.
+    s.updates.source = std::sync::Arc::new(crate::update::NoUpdates);
+}
+
+/// Put a fake newer release on offer, as the update banner shows it.
+pub fn offer_update(s: &mut AppState) {
+    s.updates.source = std::sync::Arc::new(crate::update::NoUpdates);
+    let version = semver::Version::new(0, 2, 0);
+    let mut r = crate::update::Release::new(
+        version.clone(),
+        "## What's new
+
+- Faster import previews for large spreadsheets
+- Steam ratings refresh in the background
+- Fixes for the trade checkout text",
+    );
+    r.date = Some("2026-11-24".into());
+    s.updates.status = crate::update_actions::CheckStatus::Available(version);
+    s.updates.available = Some(r);
 }

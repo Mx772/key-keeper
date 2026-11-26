@@ -10,6 +10,7 @@ mod settings;
 mod shell;
 mod shortcuts;
 mod trades;
+mod update;
 
 pub use shortcuts::shortcut;
 #[cfg(test)]
@@ -30,7 +31,16 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         Screen::Locked(l) => lock::view(l, k),
         Screen::Unlocked(sess) => shell::view(s, sess, k, &mut overlays),
     };
+    update::notes_dialog(&s.updates, k, &mut overlays);
     overlays.extend(shell::toasts(s, k));
+    let base = match update::banner(&s.updates, k) {
+        Some(banner) => col()
+            .w_full()
+            .h_full()
+            .child(banner)
+            .child(el().w_full().grow(1.0).min_h(0.0).child(base)),
+        None => base,
+    };
     let root = col()
         .key("app")
         .w_full()

@@ -9,3 +9,6 @@
 /example_import.csv
 /excelExample.png
 /repExample.png
+
+# Vault compatibility fixtures (fake data, documented test password)
+!/crates/keykeeper-core/tests/fixtures/vaults/*.kkvault
