@@ -210,6 +210,33 @@ pub fn sample_data() -> VaultData {
         k.created_at = base
             .checked_add(jiff::SignedDuration::from_hours(i as i64 * 30))
             .unwrap_or(base);
+        if let Some(app) = app {
+            // Plausible-looking demo metadata so screenshots show ratings and ownership.
+            let percent = [
+                94u8, 97, 90, 96, 98, 95, 92, 89, 93, 98, 97, 97, 90, 97, 92, 89, 96, 81,
+            ][i % 18];
+            let label = if percent >= 95 {
+                "Overwhelmingly Positive"
+            } else if percent >= 80 {
+                "Very Positive"
+            } else {
+                "Mostly Positive"
+            };
+            let ownership = match app {
+                1145360 | 632470 => keykeeper_core::Ownership::Wishlisted,
+                391540 | 367520 => keykeeper_core::Ownership::Owned,
+                _ => keykeeper_core::Ownership::NotOwned,
+            };
+            k.steam = Some(keykeeper_core::SteamMeta {
+                rating: Some(keykeeper_core::SteamRating {
+                    desc: label.into(),
+                    percent,
+                    total: 1_000 + (app % 90_000),
+                }),
+                ownership,
+                fetched_at: base,
+            });
+        }
         if name == "Stardew Valley" {
             k.platform = Platform::Gog;
         }

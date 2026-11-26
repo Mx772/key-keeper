@@ -18,8 +18,10 @@ use zeroize::Zeroizing;
 
 use crate::config::Config;
 use crate::form::KeyForm;
+use crate::steam_actions::{Candidates, Job, JobSlot, SteamUi};
 use crate::theme::ThemeId;
 use crate::trade_actions::{TemplatesUi, TradeForm};
+use keykeeper_steam::SteamApi;
 
 /// Unsaved changes reach disk this long after the last edit.
 pub const AUTOSAVE_DELAY: f64 = 1.5;
@@ -178,6 +180,9 @@ pub struct Session {
     pub trade_form: Option<TradeForm>,
     pub selected_trade: Option<Uuid>,
     pub templates_ui: TemplatesUi,
+    pub candidates: Option<Candidates>,
+    pub steam_ui: SteamUi,
+    pub missing_app_id: bool,
     // persistence
     seen_gen: u64,
     dirty_since: Option<f64>,
@@ -188,6 +193,17 @@ impl Session {
     pub fn new(vault: Vault, data: VaultData) -> Session {
         let date_format = data.settings.date_format;
         let templates = data.templates.clone();
+        let steam_ui = SteamUi {
+            profile: TextEdit::new(data.settings.steam_id.clone().unwrap_or_default()),
+            api_key: TextEdit::new(
+                data.api_keys
+                    .steam
+                    .as_ref()
+                    .map(|k| k.expose().to_string())
+                    .unwrap_or_default(),
+            ),
+            ..SteamUi::default()
+        };
         let repo = Repo::new(data);
         let gen_ = repo.generation();
         Session {
@@ -212,6 +228,9 @@ impl Session {
             trade_form: None,
             selected_trade: None,
             templates_ui: TemplatesUi::from(&templates),
+            candidates: None,
+            steam_ui,
+            missing_app_id: false,
             seen_gen: gen_,
             dirty_since: None,
             save_error: None,
@@ -245,6 +264,7 @@ impl Session {
             text: self.search.text.clone(),
             statuses,
             deadline_within_days: self.deadline_soon.then_some(30),
+            missing_app_id: self.missing_app_id,
             sort: self.sort,
             ..Query::default()
         }
@@ -318,6 +338,10 @@ pub struct AppState {
     /// Fallback target for text-field accessors when their screen isn't showing.
     pub scratch: TextEdit,
     pub scratch_table: TableState,
+    /// Steam client (a fake in tests).
+    pub steam: Arc<dyn SteamApi>,
+    pub(crate) jobs: JobSlot,
+    pub job: Option<Job>,
 }
 
 pub fn today() -> Date {
@@ -342,6 +366,9 @@ impl AppState {
             waker: None,
             scratch: TextEdit::default(),
             scratch_table: TableState::new(),
+            steam: Arc::new(keykeeper_steam::Steam::new(keykeeper_steam::UreqHttp::new())),
+            jobs: Arc::new(Mutex::new(Vec::new())),
+            job: None,
         }
     }
 
@@ -563,6 +590,11 @@ impl AppState {
     pub fn poll(&mut self, now: f64, tx: &mut Tx) -> bool {
         self.now = now;
         let mut changed = self.finish_unlock();
+        changed |= self.finish_jobs();
+        if self.job.is_some() {
+            tx.wake_after(Duration::from_millis(250));
+            changed = true; // progress text
+        }
 
         let n = self.toasts.len();
         self.toasts.retain(|t| t.until > now);
@@ -875,6 +907,13 @@ impl AppState {
         }
     }
 
+    pub fn toggle_missing_app_id(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.missing_app_id = !s.missing_app_id;
+            s.filters_changed();
+        }
+    }
+
     pub fn toggle_deadline_soon(&mut self) {
         if let Some(s) = self.session_mut() {
             s.deadline_soon = !s.deadline_soon;
@@ -890,6 +929,7 @@ impl AppState {
             "platform" => SortField::Platform,
             "deadline" => SortField::Deadline,
             "source" => SortField::Source,
+            "rating" => SortField::Rating,
             _ => SortField::Added,
         };
         let dir = if matches!(dir, rune_kit::SortDir::Descending) {

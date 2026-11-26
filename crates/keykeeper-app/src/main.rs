@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod demo;
 mod form;
+mod steam_actions;
 mod theme;
 mod trade_actions;
 mod ui;

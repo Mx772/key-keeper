@@ -287,6 +287,55 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             ),
     );
 
+    let su = &sess.steam_ui;
+    let busy = s.steam_busy();
+    let has_key = !su.api_key.text.trim().is_empty();
+    let mut steam_body = col()
+        .gap(14.0)
+        .child(field(
+            k,
+            "Your Steam profile",
+            TextInput::new(&su.profile)
+                .placeholder("SteamID64, profile link, or custom URL name")
+                .width(Some(420.0))
+                .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.steam_ui.profile))
+                .build(k)
+                .key("steam-profile"),
+            None,
+        ))
+        .child(field(
+            k,
+            "Steam Web API key (optional — needed to check your library)",
+            TextInput::new(&su.api_key)
+                .placeholder("32 hex characters")
+                .secure()
+                .width(Some(420.0))
+                .on_edit(|s: &mut AppState| sess_edit(s, |x| &mut x.steam_ui.api_key))
+                .build(k)
+                .key("steam-api-key"),
+            None,
+        ))
+        .child(muted(k, "Get one at steamcommunity.com/dev/apikey — any domain name (e.g. localhost) is accepted. It's stored encrypted in your vault.").wrap())
+        .child(
+            hstack()
+                .child(primary(k, "steam-check", if has_key { "Check wishlist & library" } else { "Check wishlist" }, !busy, |s, _| s.check_ownership()))
+                .child(el().key("steam-save").child(Button::new("Save").variant(ButtonVariant::Outline).on_press(|s: &mut AppState| s.save_steam_settings()).build(k))),
+        );
+    if let Some((ok, m)) = &su.status {
+        steam_body = steam_body.child(
+            text(m.clone())
+                .key("steam-status")
+                .font(k.ty.text_small_medium)
+                .color(if *ok {
+                    k.c.success.icon
+                } else {
+                    k.c.danger.icon
+                })
+                .wrap(),
+        );
+    }
+    let steam = card(k, "settings-steam", "Steam", steam_body);
+
     let export = card(
         k,
         "settings-export",
@@ -320,6 +369,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(appearance)
                 .child(data)
                 .child(templates)
+                .child(steam)
                 .child(security)
                 .child(export),
         )

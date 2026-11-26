@@ -18,18 +18,18 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .key("body")
         .w_full()
         .h_full()
-        .child(sidebar(sess, k))
+        .child(sidebar(s, sess, k))
         .child(col().key("page").grow(1.0).min_w(0.0).h_full().child(page));
     if sess.page == Page::Library
         && let Some(form) = &sess.form
     {
-        body = body.child(detail::view(sess, form, k, overlays));
+        body = body.child(detail::view(sess, form, s.steam_busy(), k, overlays));
     }
     confirm_dialog(sess, k, overlays);
     body
 }
 
-fn sidebar(sess: &Session, k: &Kit) -> El {
+fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
     let count = sess.repo.keys().len();
     let nav = |page: Page| {
         let active = sess.page == page;
@@ -135,11 +135,15 @@ fn sidebar(sess: &Session, k: &Kit) -> El {
                 .w_full()
                 .center_y()
                 .child(
-                    text(save_status(sess))
-                        .key("save-status")
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint)
-                        .grow(1.0),
+                    text(
+                        s.job
+                            .as_ref()
+                            .map_or_else(|| save_status(sess), |j| j.progress()),
+                    )
+                    .key("save-status")
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint)
+                    .grow(1.0),
                 )
                 .child(
                     text(concat!("v", env!("CARGO_PKG_VERSION")))

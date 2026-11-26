@@ -46,6 +46,25 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         )
         .child(spacer())
         .child(
+            el().key("steam-match-all").child(
+                Button::new("Match on Steam")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(s.steam_busy())
+                    .help("Find Steam app ids for keys that don't have one")
+                    .on_press(|s: &mut AppState| s.match_missing(&[]))
+                    .build(k),
+            ),
+        )
+        .child(
+            el().key("steam-ratings").child(
+                Button::new("Refresh ratings")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(s.steam_busy())
+                    .on_press(|s: &mut AppState| s.refresh_ratings(true))
+                    .build(k),
+            ),
+        )
+        .child(
             Button::new("Import")
                 .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut AppState| s.go(Page::Import))
@@ -104,6 +123,13 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
             "Deadline ≤ 30 days",
             sess.deadline_soon,
             |s| s.toggle_deadline_soon(),
+        ))
+        .child(chip(
+            k,
+            "filter-no-steam",
+            "No Steam id",
+            sess.missing_app_id,
+            |s| s.toggle_missing_app_id(),
         ));
     let filters = row()
         .w_full()
@@ -176,6 +202,17 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
                 .color(k.c.text_strong),
         )
         .child(spacer())
+        .child(
+            el().key("bulk-steam").child(
+                Button::new("Match on Steam")
+                    .variant(ButtonVariant::Neutral)
+                    .on_press(|s: &mut AppState| {
+                        let ids = s.session().map(Session::selected_ids).unwrap_or_default();
+                        s.match_missing(&ids);
+                    })
+                    .build(k),
+            ),
+        )
         .child(primary(k, "bulk-cart", "Add to cart", true, |s, _| {
             let ids = s.session().map(Session::selected_ids).unwrap_or_default();
             s.add_to_cart(&ids);
@@ -294,6 +331,13 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
             .sortable(),
     )
     .column(
+        TableColumn::new("rating", "Rating")
+            .width(80.0)
+            .align(Align::End)
+            .sortable(),
+    )
+    .column(TableColumn::new("steam", "Steam").width(90.0))
+    .column(
         TableColumn::new("added", "Added")
             .width(110.0)
             .align(Align::End)
@@ -308,6 +352,33 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
             "bundle" => Cell::text(key.bundle.as_deref().unwrap_or("")).muted(),
             "key" => Cell::text(key.key.masked()).mono(),
             "platform" => Cell::text(key.platform.label()).muted(),
+            "rating" => match key.steam.as_ref().and_then(|m| m.rating.as_ref()) {
+                Some(r) => {
+                    let c = match r.percent {
+                        80.. => kc.c.success.icon,
+                        60..80 => kc.c.text_base,
+                        40..60 => kc.c.warning.icon,
+                        _ => kc.c.danger.icon,
+                    };
+                    Cell::text(format!("{}%", r.percent)).mono().color(c)
+                }
+                None => Cell::text(if key.steam_app_id.is_some() {
+                    "–"
+                } else {
+                    ""
+                })
+                .muted(),
+            },
+            "steam" => match key.steam.as_ref().map(|m| m.ownership) {
+                Some(keykeeper_core::Ownership::Owned) => {
+                    Cell::text("Owned").color(kc.c.success.icon)
+                }
+                Some(keykeeper_core::Ownership::Wishlisted) => {
+                    Cell::text("Wishlist").color(kc.c.text_accent)
+                }
+                Some(keykeeper_core::Ownership::NotOwned) => Cell::text(""),
+                _ => Cell::text(""),
+            },
             "deadline" => {
                 let label = format_date(key.redemption_deadline, fmt);
                 match key.redemption_deadline {

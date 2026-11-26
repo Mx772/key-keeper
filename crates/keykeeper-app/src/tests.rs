@@ -738,3 +738,328 @@ fn trade_details_survive_navigation_and_lock() {
         "unsaved form text is flushed on lock"
     );
 }
+
+// ── Steam ────────────────────────────────────────────────────────────────────────────────────
+
+use keykeeper_steam::{AppMatch, Review, SteamApi, SteamError};
+
+/// Canned Steam responses.
+struct FakeSteam;
+
+impl SteamApi for FakeSteam {
+    fn search(&self, term: &str) -> Result<Vec<AppMatch>, SteamError> {
+        Ok(match term {
+            "Animal Well" => vec![
+                AppMatch {
+                    app_id: 813230,
+                    name: "ANIMAL WELL".into(),
+                },
+                AppMatch {
+                    app_id: 9,
+                    name: "Animal Well OST".into(),
+                },
+            ],
+            "Doom" => vec![
+                AppMatch {
+                    app_id: 379720,
+                    name: "DOOM".into(),
+                },
+                AppMatch {
+                    app_id: 2280,
+                    name: "Doom".into(),
+                },
+            ],
+            "Offline" => return Err(SteamError::Network("unreachable".into())),
+            _ => Vec::new(),
+        })
+    }
+    fn reviews(&self, app_ids: &[u32]) -> Result<Vec<Review>, SteamError> {
+        Ok(app_ids
+            .iter()
+            .map(|&app_id| Review {
+                app_id,
+                desc: "Very Positive".into(),
+                percent: 88,
+                total: 1234,
+            })
+            .collect())
+    }
+    fn resolve_profile(&self, input: &str) -> Result<u64, SteamError> {
+        if input.contains("nobody") {
+            Err(SteamError::ProfileNotFound(input.into()))
+        } else {
+            Ok(76561197960287930)
+        }
+    }
+    fn wishlist(&self, _: u64) -> Result<Vec<u32>, SteamError> {
+        Ok(vec![813230])
+    }
+    fn owned_games(&self, key: &str, _: u64) -> Result<Vec<u32>, SteamError> {
+        if key == "good-key" {
+            Ok(vec![379720])
+        } else {
+            Err(SteamError::BadApiKey)
+        }
+    }
+}
+
+fn steam_rt(names: &[&str]) -> Runtime<AppState> {
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    s.steam = std::sync::Arc::new(FakeSteam);
+    let mut data = VaultData::default();
+    for (i, n) in names.iter().enumerate() {
+        data.keys.push(keykeeper_core::GameKey::new(
+            *n,
+            format!("AAAAA-BBBBB-{i:05}"),
+        ));
+    }
+    demo::unlock(&mut s, data);
+    runtime_sized(s, TALL)
+}
+
+/// Poll until background Steam work (including chained jobs) is done.
+fn wait_for_steam(rt: &mut Runtime<AppState>) {
+    let start = Instant::now();
+    loop {
+        poll(rt, 0.0);
+        if rt.state.job.is_none() {
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "steam job never finished"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn key_named<'a>(rt: &'a Runtime<AppState>, name: &str) -> &'a keykeeper_core::GameKey {
+    rt.state
+        .session()
+        .unwrap()
+        .repo
+        .keys()
+        .iter()
+        .find(|k| k.game_name == name)
+        .unwrap()
+}
+
+#[test]
+fn find_on_steam_exact_match_applies_id_and_rating() {
+    let mut rt = steam_rt(&["Animal Well"]);
+    let id = key_named(&rt, "Animal Well").id;
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "form-find-steam");
+    wait_for_steam(&mut rt);
+    let k = key_named(&rt, "Animal Well");
+    assert_eq!(
+        k.steam_app_id,
+        Some(813230),
+        "ANIMAL WELL matches case-insensitively"
+    );
+    assert_eq!(
+        k.steam
+            .as_ref()
+            .and_then(|m| m.rating.as_ref())
+            .map(|r| r.percent),
+        Some(88),
+        "rating fetched right after"
+    );
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .form
+            .as_ref()
+            .unwrap()
+            .app_id
+            .text,
+        "813230"
+    );
+    assert!(rt.find("form-steam-meta").is_some());
+}
+
+#[test]
+fn ambiguous_search_offers_candidates() {
+    let mut rt = steam_rt(&["Doom"]);
+    let id = key_named(&rt, "Doom").id;
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "form-find-steam");
+    wait_for_steam(&mut rt);
+    assert!(rt.find("steam-candidates").is_some());
+    assert_eq!(key_named(&rt, "Doom").steam_app_id, None);
+    click(&mut rt, "candidate-2280");
+    wait_for_steam(&mut rt);
+    assert_eq!(key_named(&rt, "Doom").steam_app_id, Some(2280));
+    assert!(rt.find("steam-candidates").is_none());
+}
+
+#[test]
+fn bulk_match_then_filter_unmatched() {
+    let mut rt = steam_rt(&["Animal Well", "Doom", "Unknown Indie"]);
+    click(&mut rt, "steam-match-all");
+    wait_for_steam(&mut rt);
+    assert_eq!(key_named(&rt, "Animal Well").steam_app_id, Some(813230));
+    assert_eq!(
+        key_named(&rt, "Doom").steam_app_id,
+        None,
+        "ambiguous stays for a manual pick"
+    );
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.starts_with("Matched 1 key, 2 need a manual pick")),
+        "{:?}",
+        rt.state.toasts
+    );
+    click(&mut rt, "filter-no-steam");
+    poll(&mut rt, 0.0);
+    let mut names = shown(&rt);
+    names.sort();
+    assert_eq!(names, ["Doom", "Unknown Indie"]);
+    // Ratings were fetched for the matched key.
+    assert!(
+        key_named(&rt, "Animal Well")
+            .steam
+            .as_ref()
+            .is_some_and(|m| m.rating.is_some())
+    );
+    // One undo step per batch (ratings, then the match).
+    rt.update(|s, _| {
+        s.undo();
+        s.undo();
+    });
+    assert_eq!(key_named(&rt, "Animal Well").steam_app_id, None);
+}
+
+#[test]
+fn network_errors_are_reported() {
+    let mut rt = steam_rt(&["Offline"]);
+    rt.update(|s, _| s.match_missing(&[]));
+    wait_for_steam(&mut rt);
+    assert!(rt.state.toasts.iter().any(|t| {
+        t.error
+            && t.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("unreachable"))
+    }));
+}
+
+#[test]
+fn wishlist_and_library_check() {
+    let mut rt = steam_rt(&["Animal Well", "Doom", "Celeste"]);
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        for (name, app) in [
+            ("Animal Well", 813230),
+            ("Doom", 379720),
+            ("Celeste", 504230),
+        ] {
+            let id = x
+                .repo
+                .keys()
+                .iter()
+                .find(|k| k.game_name == name)
+                .unwrap()
+                .id;
+            x.repo
+                .update_key(id, |k| k.steam_app_id = Some(app))
+                .unwrap();
+        }
+        s.go(Page::Settings);
+    });
+    rt.frame(1.0 / 60.0);
+
+    // Without an API key: wishlist only, everything else stays Unknown.
+    rt.update(|s, _| {
+        s.session_mut().unwrap().steam_ui.profile =
+            TextEdit::new("https://steamcommunity.com/id/someone")
+    });
+    click(&mut rt, "steam-check");
+    wait_for_steam(&mut rt);
+    let own =
+        |rt: &Runtime<AppState>, n: &str| key_named(rt, n).steam.as_ref().map(|m| m.ownership);
+    assert_eq!(
+        own(&rt, "Animal Well"),
+        Some(keykeeper_core::Ownership::Wishlisted)
+    );
+    assert_eq!(own(&rt, "Doom"), Some(keykeeper_core::Ownership::Unknown));
+    let status = rt.state.session().unwrap().steam_ui.status.clone().unwrap();
+    assert!(
+        status.0 && status.1.contains("Add a Web API key"),
+        "{status:?}"
+    );
+    assert_eq!(
+        rt.state.session().unwrap().settings().steam_id.as_deref(),
+        Some("https://steamcommunity.com/id/someone"),
+        "profile saved to the vault"
+    );
+
+    // With a key: owned and not-owned are known too.
+    rt.update(|s, _| s.session_mut().unwrap().steam_ui.api_key = TextEdit::new("good-key"));
+    click(&mut rt, "steam-check");
+    wait_for_steam(&mut rt);
+    assert_eq!(own(&rt, "Doom"), Some(keykeeper_core::Ownership::Owned));
+    assert_eq!(
+        own(&rt, "Celeste"),
+        Some(keykeeper_core::Ownership::NotOwned)
+    );
+    assert!(
+        rt.state.session().unwrap().repo.api_keys().steam.is_some(),
+        "API key stored in the vault"
+    );
+
+    // A bad key is reported; the wishlist is still applied.
+    rt.update(|s, _| s.session_mut().unwrap().steam_ui.api_key = TextEdit::new("bad"));
+    click(&mut rt, "steam-check");
+    wait_for_steam(&mut rt);
+    let status = rt.state.session().unwrap().steam_ui.status.clone().unwrap();
+    assert!(status.1.contains("API key was rejected"), "{status:?}");
+
+    // Unknown profile.
+    rt.update(|s, _| s.session_mut().unwrap().steam_ui.profile = TextEdit::new("nobody"));
+    click(&mut rt, "steam-check");
+    wait_for_steam(&mut rt);
+    assert!(
+        !rt.state
+            .session()
+            .unwrap()
+            .steam_ui
+            .status
+            .clone()
+            .unwrap()
+            .0
+    );
+}
+
+#[test]
+fn ratings_respect_the_cache_unless_forced() {
+    let mut rt = steam_rt(&["Animal Well"]);
+    let id = key_named(&rt, "Animal Well").id;
+    rt.update(|s, _| {
+        s.session_mut()
+            .unwrap()
+            .repo
+            .update_key(id, |k| k.steam_app_id = Some(813230))
+            .unwrap();
+        s.refresh_ratings(false);
+    });
+    wait_for_steam(&mut rt);
+    let first = key_named(&rt, "Animal Well").steam.clone().unwrap();
+    rt.update(|s, _| s.refresh_ratings(false));
+    assert!(rt.state.job.is_none(), "fresh ratings aren't refetched");
+    rt.update(|s, _| s.refresh_ratings(true));
+    assert!(rt.state.job.is_some());
+    wait_for_steam(&mut rt);
+    assert!(
+        key_named(&rt, "Animal Well")
+            .steam
+            .as_ref()
+            .unwrap()
+            .fetched_at
+            >= first.fetched_at
+    );
+}

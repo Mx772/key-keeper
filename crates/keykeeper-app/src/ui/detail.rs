@@ -53,7 +53,7 @@ fn toggle_select(name: &'static str) -> impl Fn(&mut AppState) + Clone {
     }
 }
 
-pub fn view(sess: &Session, form: &KeyForm, k: &Kit, overlays: &mut Vec<El>) -> El {
+pub fn view(sess: &Session, form: &KeyForm, busy: bool, k: &Kit, overlays: &mut Vec<El>) -> El {
     let fmt = sess.date_format();
     let existing = form.target.and_then(|id| sess.repo.key(id));
     let err = |f: &str| form.error_for(f, fmt);
@@ -242,9 +242,10 @@ pub fn view(sess: &Session, form: &KeyForm, k: &Kit, overlays: &mut Vec<El>) -> 
         .child(field(
             k,
             "Steam app id or store link",
-            input(k, "form-app-id", &form.app_id, "972660", |f| &mut f.app_id),
+            steam_row(sess, form, busy, k),
             err("app_id"),
         ))
+        .children(candidates(sess, form, k))
         .child(field(
             k,
             "Key page link",
@@ -430,4 +431,94 @@ pub fn view(sess: &Session, form: &KeyForm, k: &Kit, overlays: &mut Vec<El>) -> 
                 .border(1.0, k.c.border_weak)
                 .child(footer),
         )
+}
+
+fn steam_row(sess: &Session, form: &KeyForm, busy: bool, k: &Kit) -> El {
+    let mut r = row()
+        .w_full()
+        .gap(6.0)
+        .center_y()
+        .child(input(k, "form-app-id", &form.app_id, "972660", |f| &mut f.app_id).grow(1.0));
+    if let Some(id) = form.target {
+        r = r.child(
+            el().key("form-find-steam").child(
+                Button::new("Find on Steam")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(busy)
+                    .on_press(move |s: &mut AppState| s.find_on_steam(id))
+                    .build(k),
+            ),
+        );
+    }
+    let meta = form
+        .target
+        .and_then(|id| sess.repo.key(id))
+        .and_then(|key| key.steam.as_ref());
+    let mut c = col().w_full().gap(6.0).child(r);
+    if let Some(m) = meta {
+        let mut parts = Vec::new();
+        if let Some(r) = &m.rating {
+            parts.push(format!(
+                "{} · {}% of {} reviews",
+                r.desc, r.percent, r.total
+            ));
+        }
+        match m.ownership {
+            keykeeper_core::Ownership::Owned => parts.push("You own this game".into()),
+            keykeeper_core::Ownership::Wishlisted => parts.push("On your wishlist".into()),
+            _ => {}
+        }
+        if !parts.is_empty() {
+            c = c.child(muted(k, parts.join(" · ")).key("form-steam-meta"));
+        }
+    }
+    c
+}
+
+fn candidates(sess: &Session, form: &KeyForm, k: &Kit) -> Option<El> {
+    let cands = sess
+        .candidates
+        .as_ref()
+        .filter(|c| Some(c.key_id) == form.target)?;
+    let key_id = cands.key_id;
+    let mut list = col().key("steam-candidates").w_full().gap(4.0).child(
+        row()
+            .w_full()
+            .center_y()
+            .child(muted(k, "Which one is it?").grow(1.0))
+            .child(
+                Button::new("Dismiss")
+                    .variant(ButtonVariant::GhostMuted)
+                    .on_press(|s: &mut AppState| s.dismiss_candidates())
+                    .build(k),
+            ),
+    );
+    for m in &cands.matches {
+        let app = m.app_id;
+        list = list.child(
+            row()
+                .key(format!("candidate-{app}"))
+                .role("button")
+                .label(m.name.clone())
+                .focusable(true)
+                .w_full()
+                .h(32.0)
+                .px(10.0)
+                .gap(8.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(k.c.page)
+                .hover(k.c.surface_hover)
+                .on_press(move |s: &mut AppState| s.choose_candidate(key_id, app))
+                .child(
+                    text(m.name.clone())
+                        .font(k.ty.ui)
+                        .color(k.c.text_base)
+                        .grow(1.0)
+                        .truncate(),
+                )
+                .child(muted(k, app.to_string())),
+        );
+    }
+    Some(list)
 }
