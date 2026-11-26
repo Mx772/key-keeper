@@ -26,7 +26,7 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Signing secrets are set
         env:
           KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
@@ -70,7 +70,7 @@ jobs:
             arch: x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # rust-toolchain.toml pins the version; add the target for that toolchain.
       - run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -124,7 +124,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: upload
