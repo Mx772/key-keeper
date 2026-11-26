@@ -49,6 +49,16 @@ Download the installer for your system from the [latest release](https://github.
 
 Your vault is stored outside the app (`%APPDATA%\KeyKeeper\data` on Windows, `~/Library/Application Support/KeyKeeper` on macOS), and uninstalling does not delete it. You can pick another location on the lock screen.
 
+## Updates
+
+KeyKeeper checks for a newer version about 5 seconds after it starts, then once a day while it keeps running. The check never blocks the app, and a failed automatic check stays silent.
+
+- **What is sent:** one HTTPS GET for `https://github.com/Mx772/key-keeper/releases/latest/download/latest.json`, a small file listing the newest published version, its release notes and download links. Nothing about you or your vault is sent. GitHub sees the request like any download.
+- **Nothing installs without you.** A newer version shows a banner with **What's new**, **Update**, **Later** (hide it until the next launch) and **Skip this version**. Only versions newer than yours are offered; drafts and prereleases never are.
+- **Update** first saves your vault, then downloads the installer and checks its signature against KeyKeeper's release key, which is built into the app. A download that doesn't match is refused. On Windows the installer then runs and restarts KeyKeeper. On macOS the app bundle is replaced and KeyKeeper restarts.
+- **Before a new version saves your vault for the first time,** it keeps a copy of the file as the previous version left it, next to the vault: `vault.kkvault.pre-<version>`. It opens with the same password, also in the older version. Delete these copies whenever you like.
+- **Turn it off** in **Settings › Updates** by unchecking "Check for updates automatically". **Check now** still works. The setting is stored in `config.toml`.
+
 ## Keyboard shortcuts
 
 On macOS, use ⌘ wherever this list says Ctrl. Press **F1** (or **Ctrl+/**) in the app to see this list.
@@ -85,7 +95,7 @@ Every screen can be rendered headless with throwaway demo data, which never touc
 
 ```sh
 cargo run -p keykeeper-app -- --snap library.png --scene library --size 1280x800
-# scenes: lock create library detail new-key import import-start cart trades settings templates shortcuts empty light
+# scenes: lock create library detail new-key import import-start cart trades settings templates shortcuts update update-notes update-lock empty light
 ```
 
 ### Installers
@@ -98,7 +108,28 @@ cargo build --release -p keykeeper-app
 cargo packager --release
 ```
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds the installers on Windows and macOS and attaches them to a **draft** GitHub release for review. The tag must match the version in `Cargo.toml`.
+### Releasing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`. It fails early unless the tag matches the version in `Cargo.toml`, the signing secrets are set, and a vault fixture exists for that version. It then builds on Windows and macOS, runs each release binary's internal `--self-test` (a headless smoke test that creates, reopens and renders a throwaway vault), signs the updater artifacts, and attaches the installers, signatures, `SHA256SUMS.txt` and `latest.json` to a **draft** GitHub release.
+
+1. Bump `version` in the root `Cargo.toml`.
+2. Add the vault compatibility fixture for the new version and commit it:
+   ```sh
+   cargo test -p keykeeper-core --test compat -- --ignored generate_fixture
+   ```
+   This writes `crates/keykeeper-core/tests/fixtures/vaults/v<version>.kkvault`, with fake keys only. Every later build must keep opening every fixture in that directory (`cargo test` checks it).
+3. Tag and push: `git tag v<version> && git push origin v<version>`.
+4. Review the draft release. Publish it when ready. Until then the app's update check can't see it, because `releases/latest` never points at drafts or prereleases.
+
+`latest.json` takes its notes from the generated release notes. If you edit the notes in the draft, the update dialog still shows the generated ones. To change them, edit `notes` in `latest.json` and re-upload it with `gh release upload v<version> latest.json --clobber`.
+
+**Updater signing.** The workflow needs two repository secrets: `UPDATER_PRIVATE_KEY` (the contents of the minisign private key file made by `cargo packager signer generate`) and `UPDATER_PRIVATE_KEY_PASSWORD`. If either is missing, the workflow fails instead of shipping an unsigned manifest. The matching public key is `crates/keykeeper-app/keys/updater.pub`, built into the app. Keep the private key outside the repository. Losing it means existing installs can't verify future updates, and users would have to reinstall by hand.
+
+To check a locally signed artifact against the built-in key:
+
+```sh
+KEYKEEPER_VERIFY="$PWD/target/dist/<file>" cargo test -p keykeeper-app verify_artifact -- --ignored
+```
 
 The app icon's source is `crates/keykeeper-app/assets/icon.svg`. After editing it, run `python crates/keykeeper-app/assets/make-icons.py` to regenerate the PNG, ICO and ICNS files. This needs the `resvg` CLI and Pillow.
 

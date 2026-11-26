@@ -1,7 +1,15 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds the installers and attaches them to a DRAFT GitHub Release.
-# Review the draft, then publish it by hand. Builds are unsigned (see README › Install).
+# Pushing a tag like v0.2.0 builds the installers, smoke-tests the release binaries, signs the
+# updater artifacts, and attaches everything plus latest.json to a DRAFT GitHub Release.
+# Review the draft, then publish it by hand: only then does the app's update check see it
+# (releases/latest never resolves to drafts or prereleases). See README › Releasing.
+#
+# Required repository secrets (Settings › Secrets and variables › Actions):
+#   UPDATER_PRIVATE_KEY           contents of the minisign private key file (cargo packager signer)
+#   UPDATER_PRIVATE_KEY_PASSWORD  its password
+# Their public half is crates/keykeeper-app/keys/updater.pub, built into the app.
+# The OS installers themselves are still not code-signed (see README › Install).
 on:
   push:
     tags: ["v*"]
@@ -14,7 +22,38 @@ env:
   PACKAGER_VERSION: 0.11.8
 
 jobs:
+  # Cheap checks first, so a bad tag fails in seconds instead of after three builds.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Signing secrets are set
+        env:
+          KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: |
+          missing=0
+          [ -n "$KEY" ] || { echo "::error::secret UPDATER_PRIVATE_KEY is not set"; missing=1; }
+          [ -n "$PASSWORD" ] || { echo "::error::secret UPDATER_PRIVATE_KEY_PASSWORD is not set"; missing=1; }
+          [ "$missing" = 0 ] || { echo "::error::refusing to build a release without signed updater artifacts"; exit 1; }
+      - name: Tag matches the crate version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "keykeeper-app") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match keykeeper-app version $version"
+            exit 1
+          fi
+      - name: A compatibility fixture exists for this version
+        run: |
+          fixture="crates/keykeeper-core/tests/fixtures/vaults/${GITHUB_REF_NAME}.kkvault"
+          if [ ! -f "$fixture" ]; then
+            echo "::error::missing $fixture. Run: cargo test -p keykeeper-core --test compat -- --ignored generate_fixture, then commit it (README › Releasing)"
+            exit 1
+          fi
+
   package:
+    needs: preflight
     name: package (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -22,10 +61,13 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            arch: x64
           - os: macos-latest
             target: aarch64-apple-darwin
+            arch: aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
+            arch: x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -37,28 +79,39 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-packager@${{ env.PACKAGER_VERSION }}
-      - name: Check the tag matches the crate version
-        shell: bash
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "keykeeper-app") | .version' | tr -d '\r')
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match keykeeper-app version $version"
-            exit 1
-          fi
       - run: cargo build --release --locked -p keykeeper-app --target ${{ matrix.target }}
-      - run: cargo packager --release --target ${{ matrix.target }}
-      - name: Collect installers
+      # Proves the release binary starts, creates and reopens a vault, writes the pre-upgrade
+      # backup and lays out the library, all headless (no GPU, no network). The x86_64 macOS
+      # build runs under Rosetta on the arm64 runner.
+      - name: Smoke test the release binary
         shell: bash
         run: |
+          exe="target/${{ matrix.target }}/release/keykeeper"
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          "$exe" --self-test
+      - name: Package and sign
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: cargo packager --release --target ${{ matrix.target }}
+      - name: Collect installers and updater artifacts
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
           mkdir -p upload
           shopt -s nullglob
           # NSIS names the installer after the binary (keykeeper_...); match the DMGs' KeyKeeper_...
-          for f in target/dist/*-setup.exe target/dist/*.dmg; do
+          for f in target/dist/*-setup.exe target/dist/*-setup.exe.sig target/dist/*.dmg; do
             cp "$f" "upload/$(basename "$f" | sed 's/^keykeeper_/KeyKeeper_/')"
           done
+          # macOS updates replace the bundle from this archive (cargo-packager makes and signs it).
+          if [ -f target/dist/KeyKeeper.app.tar.gz ]; then
+            cp target/dist/KeyKeeper.app.tar.gz "upload/KeyKeeper_${version}_${{ matrix.arch }}.app.tar.gz"
+            cp target/dist/KeyKeeper.app.tar.gz.sig "upload/KeyKeeper_${version}_${{ matrix.arch }}.app.tar.gz.sig"
+          fi
           ls -la upload
           [ -n "$(ls upload)" ] || { echo "::error::no installers produced"; exit 1; }
+          ls upload/*.sig >/dev/null 2>&1 || { echo "::error::no updater signatures produced"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.target }}
@@ -71,6 +124,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: upload
@@ -88,3 +142,13 @@ jobs:
             --verify-tag \
             --title "KeyKeeper $GITHUB_REF_NAME" \
             --generate-notes
+      - name: Write and attach latest.json (updater manifest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body -q .body > notes.md
+          python3 .github/scripts/make_latest_json.py \
+            --dir upload --tag "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --notes notes.md --out latest.json
+          cat latest.json
+          gh release upload "$GITHUB_REF_NAME" latest.json --repo "$GITHUB_REPOSITORY"
