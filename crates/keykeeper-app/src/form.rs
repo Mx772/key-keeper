@@ -26,6 +26,8 @@ pub struct KeyForm {
     pub reveal_key: bool,
     /// Which dropdown is open, if any.
     pub open_select: Option<&'static str>,
+    /// The open date calendar, if any.
+    pub date_pick: Option<crate::ui::DatePick>,
 }
 
 pub fn format_date(d: Option<Date>, fmt: DateFormat) -> String {
@@ -67,6 +69,7 @@ impl KeyForm {
             notes: TextEdit::default(),
             reveal_key: true,
             open_select: None,
+            date_pick: None,
         }
     }
 
@@ -87,6 +90,7 @@ impl KeyForm {
             notes: TextEdit::new(k.notes.clone()),
             reveal_key: false,
             open_select: None,
+            date_pick: None,
         }
     }
 

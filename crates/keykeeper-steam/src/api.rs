@@ -7,6 +7,7 @@ use crate::deals::{
     self, GG_DEALS_BATCH, GgBatch, ITAD_LOOKUP_BATCH, ITAD_PRICES_BATCH, ITAD_STEAM_SHOP,
     ItadPrices, service_err,
 };
+use crate::details::{StoreDetails, parse_store_details, parse_tag_list};
 use crate::http::Http;
 use crate::{Result, SteamError};
 
@@ -81,6 +82,27 @@ pub trait SteamApi: Send + Sync {
     fn gg_deals_prices(&self, _api_key: &str, _region: &str, _app_ids: &[u32]) -> Result<GgBatch> {
         Err(SteamError::Unsupported("gg.deals"))
     }
+    /// Store details for many apps (batched internally), each with its top tags' names.
+    /// Apps Steam doesn't know are omitted.
+    fn store_details(&self, _app_ids: &[u32]) -> Result<Vec<(StoreDetails, Vec<String>)>> {
+        Err(SteamError::Unsupported("store details"))
+    }
+    /// An image from Steam's CDN (https, `*.steamstatic.com` only).
+    fn download_image(&self, _url: &str) -> Result<Vec<u8>> {
+        Err(SteamError::Unsupported("downloads"))
+    }
+}
+
+/// Images bigger than this are refused.
+pub const IMAGE_LIMIT: usize = 4 * 1024 * 1024;
+
+/// Whether `url` is an https URL on Steam's image CDN.
+pub fn is_steam_cdn(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    !host.contains(['@', ':']) && (host == "steamstatic.com" || host.ends_with(".steamstatic.com"))
 }
 
 /// gg.deals allows 100 games a minute: wait this long between batches of 100.
@@ -89,6 +111,8 @@ pub const GG_DEALS_PAUSE: std::time::Duration = std::time::Duration::from_secs(6
 pub struct Steam<H: Http> {
     http: H,
     gg_pause: std::time::Duration,
+    /// Tag id to name, fetched once.
+    tags: std::sync::Mutex<Option<std::collections::HashMap<u32, String>>>,
 }
 
 impl<H: Http> Steam<H> {
@@ -96,6 +120,7 @@ impl<H: Http> Steam<H> {
         Steam {
             http,
             gg_pause: GG_DEALS_PAUSE,
+            tags: std::sync::Mutex::new(None),
         }
     }
 
@@ -224,6 +249,65 @@ impl<H: Http> SteamApi for Steam<H> {
             }
         }
         Ok(out)
+    }
+
+    fn store_details(&self, app_ids: &[u32]) -> Result<Vec<(StoreDetails, Vec<String>)>> {
+        let mut found = Vec::new();
+        for chunk in app_ids.chunks(REVIEW_BATCH) {
+            let ids: Vec<Value> = chunk
+                .iter()
+                .map(|id| serde_json::json!({ "appid": id }))
+                .collect();
+            let input = serde_json::json!({
+                "ids": ids,
+                "context": { "language": "english", "country_code": "US" },
+                "data_request": {
+                    "include_basic_info": true,
+                    "include_release": true,
+                    "include_platforms": true,
+                    "include_assets": true,
+                    "include_tag_count": crate::details::TAGS_KEPT + 2
+                }
+            })
+            .to_string();
+            let body = self.http.get(
+                "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
+                &[("input_json", &input)],
+            )?;
+            found.extend(parse_store_details(&body)?);
+        }
+        let need_tags = found.iter().any(|d| !d.tag_ids.is_empty());
+        let mut names = self
+            .tags
+            .lock()
+            .map_err(|_| SteamError::Parse("tag cache".into()))?;
+        if need_tags && names.is_none() {
+            // Tags are a nicety: without names the details still show.
+            if let Ok(body) = self.http.get(
+                "https://api.steampowered.com/IStoreService/GetTagList/v1/",
+                &[("language", "english")],
+            ) {
+                *names = parse_tag_list(&body).ok();
+            }
+        }
+        Ok(found
+            .into_iter()
+            .map(|d| {
+                let tags = d
+                    .tag_ids
+                    .iter()
+                    .filter_map(|id| names.as_ref()?.get(id).cloned())
+                    .collect();
+                (d, tags)
+            })
+            .collect())
+    }
+
+    fn download_image(&self, url: &str) -> Result<Vec<u8>> {
+        if !is_steam_cdn(url) {
+            return Err(SteamError::Unsupported("images from outside Steam's CDN"));
+        }
+        self.http.get_bytes(url, IMAGE_LIMIT)
     }
 
     fn gg_deals_prices(&self, api_key: &str, region: &str, app_ids: &[u32]) -> Result<GgBatch> {
@@ -469,6 +553,44 @@ mod tests {
     }
 
     #[test]
+    fn store_details_names_tags_once_and_images_stay_on_steams_cdn() {
+        let s = fake(|url| {
+            Ok(if url.contains("GetTagList") {
+                r#"{"response":{"tags":[{"tagid":1628,"name":"Metroidvania"},{"tagid":21,"name":"Adventure"}]}}"#.into()
+            } else {
+                r#"{"response":{"store_items":[{"id":5,"appid":5,"success":1,"name":"Five","tags":[{"tagid":21,"weight":9},{"tagid":1628,"weight":10},{"tagid":77,"weight":1}]}]}}"#.into()
+            })
+        });
+        let got = s.store_details(&[5]).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0.app_id, 5);
+        assert_eq!(
+            got[0].1,
+            vec!["Metroidvania".to_string(), "Adventure".to_string()]
+        );
+        s.store_details(&[5]).unwrap();
+        let calls = s.http.calls.lock().unwrap();
+        assert_eq!(
+            calls.iter().filter(|c| c.0.contains("GetTagList")).count(),
+            1,
+            "tag names are fetched once"
+        );
+        drop(calls);
+        assert!(matches!(
+            s.download_image("https://evil.example/header.jpg"),
+            Err(SteamError::Unsupported(_))
+        ));
+        assert!(is_steam_cdn(
+            "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/5/header.jpg"
+        ));
+        assert!(is_steam_cdn("https://steamstatic.com/x"));
+        assert!(!is_steam_cdn("http://cdn.akamai.steamstatic.com/x"));
+        assert!(!is_steam_cdn("https://steamstatic.com.evil.example/x"));
+        assert!(!is_steam_cdn("https://user@cdn.steamstatic.com/x"));
+        assert!(!is_steam_cdn("https://notsteamstatic.com/x"));
+    }
+
+    #[test]
     fn gg_deals_batches_by_hundred_and_keeps_partial_results() {
         // Second batch is rate-limited: the first batch's results are kept.
         let s = fake(|_| {
@@ -609,5 +731,18 @@ mod tests {
             76561197960287930
         );
         assert!(s.wishlist(76561197960287930).is_ok());
+        let d = s.store_details(&[1231880, 367520]).unwrap();
+        assert_eq!(d.len(), 2, "{d:?}");
+        let (hk, tags) = d.iter().find(|(d, _)| d.app_id == 367520).unwrap();
+        assert!(
+            !hk.description.is_empty() && !tags.is_empty(),
+            "{hk:?} {tags:?}"
+        );
+        let url = hk.header_url.clone().unwrap();
+        let img = s.download_image(&url).unwrap();
+        assert!(
+            img.len() > 10_000 && img.starts_with(&[0xFF, 0xD8]),
+            "a JPEG from {url}"
+        );
     }
 }

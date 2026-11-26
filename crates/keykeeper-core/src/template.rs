@@ -17,7 +17,19 @@ pub const TRADE_VARS: &[&str] = &[
     "received",
 ];
 
+/// Variables for the "have list": game details only, never the key.
+pub const HAVE_VARS: &[&str] = &[
+    "name",
+    "count",
+    "steam_url",
+    "bundle",
+    "platform",
+    "rating",
+    "price",
+];
+
 pub const DEFAULT_CHECKOUT_LINE: &str = "{name}: {key}";
+pub const DEFAULT_HAVE_LINE: &str = "{name}{count}";
 pub const DEFAULT_REP: &str = "+Rep: An amazing & quick trader, recommended! We successfully completed this trade: {trade_url}\nThanks a lot for the trade!";
 
 /// The user's templates, stored in the vault.
@@ -28,6 +40,8 @@ pub struct Templates {
     pub checkout_line: String,
     /// The steamtrades reputation post.
     pub rep: String,
+    /// One line per game in the "have list" copied for trading sites (no keys).
+    pub have_line: String,
 }
 
 impl Default for Templates {
@@ -35,8 +49,59 @@ impl Default for Templates {
         Templates {
             checkout_line: DEFAULT_CHECKOUT_LINE.into(),
             rep: DEFAULT_REP.into(),
+            have_line: DEFAULT_HAVE_LINE.into(),
         }
     }
+}
+
+/// A "have list" for trading sites: one line per game among `keys` that are still tradable
+/// (Available / Unknown), copies of a game merged (`{count}` is " x2" for two copies, empty
+/// for one). Keys never appear: the template only gets [`HAVE_VARS`]. Lines come in the order
+/// the games first appear in `keys`.
+pub fn have_list(
+    repo: &crate::repo::Repo,
+    keys: &[uuid::Uuid],
+    line: &str,
+) -> Result<(String, usize), TemplateError> {
+    let mut games: Vec<(String, Vec<&crate::model::GameKey>)> = Vec::new();
+    for k in keys.iter().filter_map(|id| repo.key(*id)) {
+        if !k.status.can_trade() {
+            continue;
+        }
+        let ident = crate::query::game_identity(k);
+        match games.iter_mut().find(|(g, _)| *g == ident) {
+            Some((_, v)) => v.push(k),
+            None => games.push((ident, vec![k])),
+        }
+    }
+    let mut out = Vec::with_capacity(games.len());
+    for (_, copies) in &games {
+        let k = copies[0];
+        let n = copies.len();
+        let rendered = render(line, |v| {
+            Some(match v {
+                "name" => k.game_name.clone(),
+                "count" if n > 1 => format!(" x{n}"),
+                "count" => String::new(),
+                "steam_url" => k.steam_url().unwrap_or_default(),
+                "bundle" => k.bundle.clone().unwrap_or_default(),
+                "platform" => k.platform.label().to_string(),
+                "rating" => k
+                    .steam
+                    .as_ref()
+                    .and_then(|m| m.rating.as_ref())
+                    .map(|r| format!("{}%", r.percent))
+                    .unwrap_or_default(),
+                "price" => repo
+                    .key_prices(k)
+                    .and_then(|p| p.best().map(|(m, _)| m.format()))
+                    .unwrap_or_default(),
+                _ => return None,
+            })
+        })?;
+        out.push(rendered);
+    }
+    Ok((out.join("\n"), games.len()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,5 +265,37 @@ mod tests {
             render("✓ {name} — merci", vars).unwrap(),
             "✓ Undertale — merci"
         );
+    }
+
+    #[test]
+    fn have_list_merges_copies_and_never_shows_keys() {
+        use crate::model::{GameKey, KeyStatus};
+        let mut r = crate::repo::Repo::new(crate::data::VaultData::default());
+        let mut a = GameKey::new("Tunic", "TUN1C-F0X99-AAAA1");
+        a.steam_app_id = Some(553420);
+        let mut b = a.clone();
+        b.id = uuid::Uuid::now_v7();
+        b.key = crate::secret::Secret::new("TUN1C-F0X99-AAAA2");
+        let c = GameKey::new("Celeste", "QQ7RT-PP2MN-ZZ9XY");
+        let mut d = GameKey::new("Undertale", "UNDR7-TALE0-00001");
+        d.status = KeyStatus::Traded;
+        let ids = r.add_keys(vec![a, b, c, d], "seed");
+        let (text, n) = have_list(&r, &ids, DEFAULT_HAVE_LINE).unwrap();
+        assert_eq!(
+            text,
+            "Tunic x2
+Celeste"
+        );
+        assert_eq!(n, 2);
+        let (text, _) = have_list(&r, &ids, "{name} {steam_url} [{platform}]").unwrap();
+        assert!(text.starts_with("Tunic https://store.steampowered.com/app/553420"));
+        assert!(text.contains("Celeste  [Steam]"));
+        assert!(!text.contains("TUN1C"));
+        assert!(
+            check("{key}", &[HAVE_VARS]).len() == 1,
+            "keys are not a have-list variable"
+        );
+        assert!(check(DEFAULT_HAVE_LINE, &[HAVE_VARS]).is_empty());
+        assert!(have_list(&r, &ids, "{nope}").is_err());
     }
 }

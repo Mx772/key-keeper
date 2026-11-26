@@ -249,7 +249,99 @@ pub fn sample_data() -> VaultData {
         data.keys.push(k);
     }
     data.trades.push(trade);
+    for (app, info) in demo_info(base) {
+        data.app_info.insert(app, info);
+    }
     data
+}
+
+/// Store details for a few demo games, written for screenshots (not Steam's text).
+fn demo_info(at: jiff::Timestamp) -> Vec<(u32, keykeeper_core::AppInfo)> {
+    use keykeeper_core::{AppInfo, DeckCompat};
+    /// app, name, developer, description, tags, release (unix), Deck
+    type Row = (
+        u32,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        i64,
+        DeckCompat,
+    );
+    let rows: [Row; 6] = [
+        (
+            1231880,
+            "Haiku, the Robot",
+            "Mister Morris Games",
+            "A small robot explores a broken mechanical world, upgrading itself and fighting corrupted machines on the way.",
+            &["Metroidvania", "Adventure", "Pixel Graphics", "Cute"],
+            1_651_154_399,
+            DeckCompat::Verified,
+        ),
+        (
+            1145360,
+            "Hades",
+            "Supergiant Games",
+            "Fight your way out of the underworld in a fast roguelike where every escape attempt moves the story forward.",
+            &["Roguelike", "Action", "Mythology", "Great Soundtrack"],
+            1_600_300_000,
+            DeckCompat::Verified,
+        ),
+        (
+            972660,
+            "Spiritfarer",
+            "Thunder Lotus Games",
+            "A cozy management game about caring for spirits on your boat before guiding them to the afterlife.",
+            &["Management", "Cozy", "Hand-drawn", "Emotional"],
+            1_597_708_800,
+            DeckCompat::Verified,
+        ),
+        (
+            553420,
+            "TUNIC",
+            "Andrew Shouldice",
+            "A tiny fox explores a land of secrets, piecing together a mysterious instruction manual as it goes.",
+            &["Adventure", "Souls-like", "Exploration", "Cute"],
+            1_647_302_400,
+            DeckCompat::Verified,
+        ),
+        (
+            1092790,
+            "Inscryption",
+            "Daniel Mullins Games",
+            "A deck-building roguelike wrapped in an escape room and a psychological horror story.",
+            &["Card Game", "Deckbuilding", "Horror", "Puzzle"],
+            1_634_860_800,
+            DeckCompat::Verified,
+        ),
+        (
+            653530,
+            "Return of the Obra Dinn",
+            "Lucas Pope",
+            "An insurance investigator boards a ghost ship and deduces the fate of every crew member.",
+            &["Mystery", "Detective", "Puzzle", "1-bit"],
+            1_539_734_400,
+            DeckCompat::Playable,
+        ),
+    ];
+    rows.into_iter()
+        .map(|(app, name, dev, desc, tags, released, deck)| {
+            (
+                app,
+                AppInfo {
+                    name: name.into(),
+                    description: desc.into(),
+                    developers: vec![dev.into()],
+                    tags: tags.iter().map(|t| t.to_string()).collect(),
+                    released: jiff::Timestamp::from_second(released).ok(),
+                    deck,
+                    header_url: None,
+                    capsule_url: None,
+                    fetched_at: at,
+                },
+            )
+        })
+        .collect()
 }
 
 /// Made-up store prices so screenshots show the Deals column (not real data).
@@ -293,7 +385,13 @@ pub fn unlock(s: &mut AppState, data: VaultData) {
     ) {
         s.open_session(v, data);
     }
-    // Demo state never talks to GitHub.
+    // Screenshots use the default theme, whatever the user's config says (the light scene
+    // picks Light before unlocking).
+    if s.theme != crate::theme::ThemeId::Light {
+        s.theme = crate::theme::ThemeId::Midnight;
+    }
+    // Demo state never talks to GitHub or Steam.
+    s.mark_offline();
     s.updates.source = std::sync::Arc::new(crate::update::NoUpdates);
 }
 

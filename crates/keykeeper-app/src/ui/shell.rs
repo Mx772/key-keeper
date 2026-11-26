@@ -20,11 +20,15 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
         .h_full()
         .child(sidebar(s, sess, k))
         .child(col().key("page").grow(1.0).min_w(0.0).h_full().child(page));
-    let detail_open = sess.page == Page::Library && sess.form.is_some();
+    let detail_open = sess.page == Page::Library && (sess.form.is_some() || sess.bulk.is_some());
     if sess.page == Page::Library
         && let Some(form) = &sess.form
     {
-        body = body.child(detail::view(sess, form, s.steam_busy(), k, overlays));
+        body = body.child(detail::view(s, sess, form, s.steam_busy(), k, overlays));
+    } else if sess.page == Page::Library
+        && let Some(b) = &sess.bulk
+    {
+        body = body.child(super::bulk::view(sess, b, k, overlays));
     }
     overlays.extend(cart_bauble(s, sess, detail_open, k));
     confirm_dialog(sess, k, overlays);
@@ -74,6 +78,24 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
             })
             .on_press(move |s: &mut AppState| s.go(page))
             .child(
+                rune::icon(
+                    match page {
+                        Page::Library => &super::NAV_LIBRARY,
+                        Page::Cart => &super::CART,
+                        Page::Trades => &super::NAV_TRADES,
+                        Page::Import => &super::NAV_IMPORT,
+                        Page::Settings => &super::NAV_SETTINGS,
+                    },
+                    17.0,
+                )
+                .color(if active {
+                    k.c.text_contrast
+                } else {
+                    k.c.text_muted
+                })
+                .a11y_hidden(),
+            )
+            .child(
                 text(page.label())
                     .font(k.ty.ui_medium)
                     .color(if active {
@@ -84,6 +106,39 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
                     .grow(1.0)
                     .a11y_hidden(),
             );
+        if page == Page::Library {
+            let soon = sess.stats(crate::app::today()).expiring;
+            if soon > 0 {
+                r = r.child(
+                    el().key("nav-expiring")
+                        .role("button")
+                        .label(format!("{soon} keys with a deadline soon"))
+                        .h(20.0)
+                        .min_w(20.0)
+                        .px(7.0)
+                        .radius(10.0)
+                        .center()
+                        .fill(if active {
+                            k.c.text_contrast.alpha(0.22)
+                        } else {
+                            k.c.warning.icon.alpha(0.18)
+                        })
+                        .cursor(rune::Cursor::Pointer)
+                        .help("Redemption deadlines within 30 days or past. Click to show them.")
+                        .on_press(|s: &mut AppState| s.show_expiring())
+                        .child(
+                            text(format!("{soon} soon"))
+                                .font(k.ty.text_xsmall_medium)
+                                .color(if active {
+                                    k.c.text_contrast
+                                } else {
+                                    k.c.warning.icon
+                                })
+                                .a11y_hidden(),
+                        ),
+                );
+            }
+        }
         if let Some(b) = badge {
             r = r.child(
                 text(b)
@@ -144,10 +199,27 @@ fn sidebar(s: &AppState, sess: &Session, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .border(1.0, k.c.border_weak)
         .child(
-            text("KeyKeeper")
-                .font(rune::TextStyle::new(22.0, 700.0).lh(28.0))
-                .color(k.c.text_accent)
-                .pl(6.0),
+            row()
+                .gap(9.0)
+                .center_y()
+                .pl(6.0)
+                .child(
+                    el().size(30.0, 30.0)
+                        .radius(9.0)
+                        .center()
+                        .fill(k.c.bg_accent)
+                        .shadow(2.0, 10.0, k.c.bg_accent.alpha(0.35))
+                        .child(
+                            rune::icon(&super::KEY, 18.0)
+                                .color(k.c.text_contrast)
+                                .a11y_hidden(),
+                        ),
+                )
+                .child(
+                    text("KeyKeeper")
+                        .font(rune::TextStyle::new(21.0, 750.0).lh(28.0).tracking(-0.3))
+                        .color(k.c.text_strong),
+                ),
         )
         .child(rows.grow(1.0))
         .child(footer)
@@ -259,6 +331,23 @@ fn confirm_dialog(sess: &Session, k: &Kit, overlays: &mut Vec<El>) {
             "Mark all redeemed",
             false,
         ),
+        Confirm::BulkEdit => {
+            let n = sess.bulk.as_ref().map_or(0, |b| b.ids.len());
+            let status = sess.bulk.as_ref().and_then(|b| b.status);
+            (
+                format!("Change {n} keys?"),
+                match status {
+                    Some(st) if st.is_gone() => format!(
+                        "They'll all be marked {}. You can undo with {}.",
+                        st.label(),
+                        shortcut("Ctrl+Z")
+                    ),
+                    _ => format!("You can undo with {}.", shortcut("Ctrl+Z")),
+                },
+                "Apply",
+                false,
+            )
+        }
         Confirm::CancelTrade(_) => (
             "Cancel this trade?".to_string(),
             format!("Its keys go back to the status they had before you added them to the cart. You can undo with {}.", shortcut("Ctrl+Z")),
@@ -321,6 +410,11 @@ pub fn toasts(s: &AppState, k: &Kit) -> Option<El> {
         }
         if t.error {
             toast = toast.icon(k, k.glyph.circle_x);
+        }
+        if t.undo {
+            toast = toast.action(k, "Undo", true, move |s: &mut AppState, _: &mut Tx| {
+                s.undo_from_toast(id)
+            });
         }
         region = region.child(toast.build(k));
     }

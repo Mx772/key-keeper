@@ -1,6 +1,7 @@
 //! KeyKeeper core: everything that is not GUI or network lives here so it can be tested headlessly.
 //! Crates: `keykeeper-core` (this), `keykeeper-steam` (network), `keykeeper-app` (GUI).
 
+pub mod appinfo;
 pub mod data;
 pub mod error;
 pub mod export;
@@ -16,6 +17,7 @@ pub mod trade;
 pub mod upgrade;
 pub mod vault;
 
+pub use appinfo::{AppInfo, BlobCache, BlobCipher, DeckCompat};
 pub use data::VaultData;
 pub use error::{RepoError, VaultError};
 pub use model::{
@@ -23,7 +25,7 @@ pub use model::{
     Settings, SteamMeta, SteamRating, Trade, TradeSite, TradeStatus,
 };
 pub use prices::{GamePrices, Money, ShopPrice};
-pub use query::{Query, Sort, SortDir, SortField};
+pub use query::{Query, Sort, SortDir, SortField, game_identity};
 pub use repo::Repo;
 pub use secret::Secret;
 pub use template::Templates;

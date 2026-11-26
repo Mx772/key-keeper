@@ -1,17 +1,23 @@
 //! Views. Each page is a function `(&AppState, &Kit, &mut overlays) -> El`; all behaviour goes
 //! through `AppState` methods.
 
+mod bulk;
+mod card;
 mod cart;
+mod datepick;
 mod detail;
+mod grid;
 mod import;
 mod library;
 mod lock;
+mod row_menu;
 mod settings;
 mod shell;
 mod shortcuts;
 mod trades;
 mod update;
 
+pub use datepick::DatePick;
 pub use shortcuts::shortcut;
 #[cfg(test)]
 pub const SHORTCUT_COUNT: usize = shortcuts::SHORTCUTS.len();
@@ -26,6 +32,20 @@ use keykeeper_core::KeyStatus;
 
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     let k = s.theme.kit(cx.system_dark());
+    if let Some(r) = rune::memo::layout("app") {
+        let maximized = cx.is_maximized();
+        let prev = s.window_seen.get();
+        // Keep the last restored size while maximized, so un-maximizing next time comes back.
+        let (width, height) = match prev {
+            Some(p) if maximized => (p.width, p.height),
+            _ => (r[2], r[3]),
+        };
+        s.window_seen.set(Some(crate::config::WindowSize {
+            width,
+            height,
+            maximized,
+        }));
+    }
     let mut overlays = Vec::new();
     let base = match &s.screen {
         Screen::Locked(l) => lock::view(l, k),
@@ -313,6 +333,30 @@ pub static KEY: rune::Icon = rune::Icon {
     name: "kk-key",
     view: 16.0,
     body: r#"<circle cx="5.5" cy="10.5" r="2.75" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M7.5 8.5L13 3M11 5L12.5 6.5M9.5 6.5L10.75 7.75" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
+};
+
+pub static NAV_LIBRARY: rune::Icon = rune::Icon {
+    name: "kk-nav-library",
+    view: 18.0,
+    body: r#"<rect x="2.5" y="2.5" width="5.5" height="5.5" rx="1.4" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="10" y="2.5" width="5.5" height="5.5" rx="1.4" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="2.5" y="10" width="5.5" height="5.5" rx="1.4" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="10" y="10" width="5.5" height="5.5" rx="1.4" stroke="currentColor" stroke-width="1.5" fill="none"/>"#,
+};
+
+pub static NAV_TRADES: rune::Icon = rune::Icon {
+    name: "kk-nav-trades",
+    view: 18.0,
+    body: r#"<path d="M3 6.5H14M14 6.5L11 3.5M14 6.5L11 9.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 11.5H4M4 11.5L7 8.5M4 11.5L7 14.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+pub static NAV_IMPORT: rune::Icon = rune::Icon {
+    name: "kk-nav-import",
+    view: 18.0,
+    body: r#"<path d="M9 2.5V11M9 11L5.5 7.5M9 11L12.5 7.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 11.5V14C3 14.55 3.45 15 4 15H14C14.55 15 15 14.55 15 14V11.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>"#,
+};
+
+pub static NAV_SETTINGS: rune::Icon = rune::Icon {
+    name: "kk-nav-settings",
+    view: 18.0,
+    body: r#"<circle cx="9" cy="9" r="2.4" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M9 1.8V3.6M9 14.4V16.2M1.8 9H3.6M14.4 9H16.2M3.9 3.9L5.2 5.2M12.8 12.8L14.1 14.1M3.9 14.1L5.2 12.8M12.8 5.2L14.1 3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>"#,
 };
 
 /// A rounded, clearly clickable pill that opens `url` in the browser.

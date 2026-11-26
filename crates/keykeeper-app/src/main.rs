@@ -11,9 +11,13 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod bulk;
 mod config;
 mod demo;
 mod form;
+mod info;
+mod layout;
+mod library_actions;
 mod price_actions;
 mod selftest;
 mod steam_actions;
@@ -65,6 +69,73 @@ const SCENES: &[Scene] = &[
         });
         if let Some(id) = id {
             s.open_key(id);
+        }
+    }),
+    ("hover-card", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| {
+            x.rows.iter().copied().find(|id| {
+                x.repo
+                    .key(*id)
+                    .is_some_and(|k| k.steam_app_id == Some(1231880))
+            })
+        });
+        if let Some(id) = id {
+            s.hover = Some(app::Hover {
+                key: id,
+                since: 0.0,
+                open: true,
+            });
+        }
+    }),
+    ("row-menu", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| x.rows.get(4).copied());
+        if let Some(id) = id {
+            s.open_row_menu(id, Some(rune::PointerPress { x: 520.0, y: 380.0 }));
+            s.set_row_menu_status_open(true);
+        }
+    }),
+    ("bulk-edit", |s| {
+        demo::unlock(s, demo::sample_data());
+        if let Some(x) = s.session_mut() {
+            let ids = x.rows.iter().take(5).copied().collect();
+            x.bulk = Some(bulk::BulkForm::new(ids));
+        }
+        s.with_bulk(|b| b.add_tags = rune::TextEdit::new("humble-2026"));
+    }),
+    ("grouped", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.toggle_group_by_bundle();
+        s.toggle_group("Fanatical Mystery");
+    }),
+    ("view-menu", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.toggle_view_menu();
+        if let Some(x) = s.session_mut() {
+            x.view_columns_open = true;
+        }
+    }),
+    ("grid", |s| {
+        demo::unlock(s, demo::sample_data());
+        s.config.library.view = config::LibraryView::Grid;
+        let id = s.session().and_then(|x| x.rows.get(2).copied());
+        if let Some(id) = id {
+            s.select_card(id);
+        }
+    }),
+    ("datepick", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| {
+            x.rows.iter().copied().find(|id| {
+                x.repo
+                    .key(*id)
+                    .is_some_and(|k| k.redemption_deadline.is_some() && k.steam_app_id.is_some())
+            })
+        });
+        if let Some(id) = id {
+            s.open_key(id);
+            s.toggle_date_pick("deadline");
         }
     }),
     ("cart-button", |s| {
@@ -184,19 +255,23 @@ fn main() {
         std::process::exit(selftest::run());
     }
     set_icon();
-    let theme = config::Config::default_path()
+    let cfg = config::Config::default_path()
         .map(|p| config::Config::load(&p))
-        .unwrap_or_default()
-        .theme();
+        .unwrap_or_default();
+    let theme = cfg.theme();
+    const MIN: (f32, f32) = (960.0, 620.0);
+    let size = cfg.window.map_or((1280.0, 800.0), |w| w.clamped(MIN));
+    let maximized = cfg.window.is_some_and(|w| w.maximized);
     let spec = AppSpec::<AppState> {
-        min_size: Some((960.0, 620.0)),
+        min_size: Some(MIN),
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
         scenes: SCENES,
-        ..AppSpec::new("KeyKeeper", (1280.0, 800.0), AppState::load, ui::view)
+        ..AppSpec::new("KeyKeeper", size, AppState::load, ui::view)
     };
     App::new(spec)
+        .maximized(maximized)
         .color_scheme(theme.color_scheme())
         .on_close(on_close)
         .run();

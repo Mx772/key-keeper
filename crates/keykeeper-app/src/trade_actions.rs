@@ -81,6 +81,7 @@ impl TradeForm {
 pub struct TemplatesUi {
     pub checkout: TextEdit,
     pub rep: TextEdit,
+    pub have: TextEdit,
 }
 
 impl TemplatesUi {
@@ -88,7 +89,12 @@ impl TemplatesUi {
         TemplatesUi {
             checkout: TextEdit::new(t.checkout_line.clone()),
             rep: TextEdit::new(t.rep.clone()),
+            have: TextEdit::new(t.have_line.clone()),
         }
+    }
+
+    pub fn have_errors(&self) -> Vec<TemplateError> {
+        template::check(&self.have.text, &[template::HAVE_VARS])
     }
 
     pub fn checkout_errors(&self) -> Vec<TemplateError> {
@@ -103,6 +109,7 @@ impl TemplatesUi {
         Templates {
             checkout_line: self.checkout.text.clone(),
             rep: self.rep.text.clone(),
+            have_line: self.have.text.clone(),
         }
     }
 }
@@ -125,6 +132,8 @@ pub fn sample_var(name: &str, date: &str) -> Option<String> {
             "count" => "2",
             "games" => "Undertale, Celeste",
             "received" => "Tunic, A Short Hike",
+            "rating" => "94%",
+            "price" => "$4.99",
             _ => return None,
         }
         .to_string(),
@@ -212,7 +221,8 @@ impl AppState {
         {
             s.form = Some(crate::form::KeyForm::from_key(k, fmt));
         }
-        if res.added > 0 {
+        let undoable = res.added > 0;
+        if undoable {
             self.cart_bump_pending = true;
         }
         let msg = match (res.added, res.skipped) {
@@ -222,7 +232,7 @@ impl AppState {
             (n, 0) => format!("Added {n} to cart"),
             (n, k) => format!("Added {n} to cart, skipped {k} unavailable"),
         };
-        self.toast(msg);
+        self.toast_undo(msg, undoable);
     }
 
     /// Mark keys as redeemed on my own account today (they leave the cart if they were in it).
@@ -256,14 +266,13 @@ impl AppState {
         if let Some(url) = url {
             let _ = tx.open_url(&url);
         }
-        let undo = crate::ui::shortcut("Ctrl+Z");
-        self.toast(match name {
-            Some(n) => format!("Marked {n} as redeemed today — {undo} to undo"),
-            None => format!(
-                "Marked {} keys as redeemed today — {undo} to undo",
-                done.len()
-            ),
-        });
+        self.toast_undo(
+            match name {
+                Some(n) => format!("Marked {n} as redeemed today"),
+                None => format!("Marked {} keys as redeemed today", done.len()),
+            },
+            true,
+        );
     }
 
     pub fn ask_redeem_cart(&mut self) {
@@ -282,11 +291,13 @@ impl AppState {
         s.trade_form = None;
         s.refresh_trade_form();
         let n = done.len();
-        self.toast(format!(
-            "Self-checkout: {n} key{} marked redeemed today — {} to undo",
-            if n == 1 { "" } else { "s" },
-            crate::ui::shortcut("Ctrl+Z")
-        ));
+        self.toast_undo(
+            format!(
+                "Self-checkout: {n} key{} marked redeemed today",
+                if n == 1 { "" } else { "s" }
+            ),
+            n > 0,
+        );
     }
 
     pub fn remove_from_cart(&mut self, id: Uuid) {
@@ -428,7 +439,11 @@ impl AppState {
 
     pub fn save_templates(&mut self) {
         let Some(s) = self.session_mut() else { return };
-        if !s.templates_ui.checkout_errors().is_empty() || !s.templates_ui.rep_errors().is_empty() {
+        let t = &s.templates_ui;
+        if !t.checkout_errors().is_empty()
+            || !t.rep_errors().is_empty()
+            || !t.have_errors().is_empty()
+        {
             return;
         }
         s.repo.set_templates(s.templates_ui.to_templates());
@@ -475,7 +490,7 @@ mod tests {
 
     #[test]
     fn sample_vars_cover_every_variable() {
-        for v in KEY_VARS.iter().chain(TRADE_VARS) {
+        for v in KEY_VARS.iter().chain(TRADE_VARS).chain(template::HAVE_VARS) {
             assert!(sample_var(v, "1/7/2026").is_some(), "{v}");
         }
     }

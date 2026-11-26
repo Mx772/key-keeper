@@ -16,6 +16,17 @@ pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["Ctrl+Y", "Ctrl+Shift+Z"], "Redo"),
     (&["Ctrl+Shift+C"], "Copy selected keys as \"Name: Key\""),
     (&["Delete"], "Delete selected keys"),
+    (
+        &["↑", "↓"],
+        "Move through the library (or type a name to jump to it)",
+    ),
+    (&["Enter", "F2"], "Edit the selected key"),
+    (&["Ctrl+C"], "Copy the selected key"),
+    (
+        &["Ctrl+B"],
+        "Add selected keys to the cart, or take them out",
+    ),
+    (&["Menu", "Shift+F10"], "Actions menu for the selected keys"),
     (&["Ctrl+L"], "Lock the vault"),
     (&["Esc"], "Close a dialog or the editor"),
     (&["F1", "Ctrl+/"], "Show keyboard shortcuts"),

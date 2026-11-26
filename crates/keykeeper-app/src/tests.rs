@@ -957,6 +957,10 @@ fn ambiguous_search_offers_candidates() {
 #[test]
 fn bulk_match_then_filter_unmatched() {
     let mut rt = steam_rt(&["Animal Well", "Doom", "Unknown Indie"]);
+    click(&mut rt, "steam-menu-button");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "steam-match-all");
     wait_for_steam(&mut rt);
     assert_eq!(key_named(&rt, "Animal Well").steam_app_id, Some(813230));
@@ -1768,6 +1772,10 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
         ui.itad_key = TextEdit::new("itad-key");
         ui.gg_key = TextEdit::new("bad-gg");
     });
+    click(&mut rt, "steam-menu-button");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
     click(&mut rt, "prices-refresh");
     wait_for_steam(&mut rt);
     let s = rt.state.session().unwrap();
@@ -1809,4 +1817,842 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     let s = rt.state.session().unwrap();
     let first = s.repo.key(s.rows[0]).unwrap();
     assert!(s.repo.key_prices(first).is_some());
+}
+
+// ── game details: hover card, store details, artwork cache ───────────────────────────────────
+
+/// FakeSteam plus store details and one downloadable image.
+struct InfoSteam {
+    downloads: Arc<Mutex<Vec<String>>>,
+}
+
+impl SteamApi for InfoSteam {
+    fn search(&self, t: &str) -> Result<Vec<AppMatch>, SteamError> {
+        FakeSteam.search(t)
+    }
+    fn reviews(&self, a: &[u32]) -> Result<Vec<Review>, SteamError> {
+        FakeSteam.reviews(a)
+    }
+    fn resolve_profile(&self, i: &str) -> Result<u64, SteamError> {
+        FakeSteam.resolve_profile(i)
+    }
+    fn wishlist(&self, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.wishlist(id)
+    }
+    fn owned_games(&self, k: &str, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.owned_games(k, id)
+    }
+    fn store_details(
+        &self,
+        app_ids: &[u32],
+    ) -> Result<Vec<(keykeeper_steam::StoreDetails, Vec<String>)>, SteamError> {
+        Ok(app_ids
+            .iter()
+            .map(|&app_id| {
+                (
+                    keykeeper_steam::StoreDetails {
+                        app_id,
+                        name: format!("Store name {app_id}"),
+                        description: "A test game.".into(),
+                        developers: vec!["Test Dev".into()],
+                        tag_ids: vec![1],
+                        released: Some(1_651_154_399),
+                        deck_category: 3,
+                        header_url: Some(format!(
+                            "https://shared.akamai.steamstatic.com/{app_id}/header.jpg"
+                        )),
+                        capsule_url: None,
+                    },
+                    vec!["Metroidvania".to_string()],
+                )
+            })
+            .collect())
+    }
+    fn download_image(&self, url: &str) -> Result<Vec<u8>, SteamError> {
+        self.downloads.lock().unwrap().push(url.to_string());
+        Ok(include_bytes!("../assets/icon-32.png").to_vec())
+    }
+}
+
+fn info_rt(downloads: Arc<Mutex<Vec<String>>>) -> Runtime<AppState> {
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    let mut data = demo::sample_data();
+    data.app_info.clear();
+    demo::unlock(&mut s, data);
+    s.offline = false;
+    s.steam = Arc::new(InfoSteam { downloads });
+    runtime(s)
+}
+
+/// Poll until `done` holds (background threads).
+fn poll_until(rt: &mut Runtime<AppState>, now: f64, done: impl Fn(&AppState) -> bool) {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        poll(rt, now);
+        if done(&rt.state) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("background work never finished");
+}
+
+#[test]
+fn resting_on_a_name_opens_the_details_card_and_fetches_details_once() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    let (id, app) = {
+        let s = rt.state.session().unwrap();
+        let k = s
+            .rows
+            .iter()
+            .filter_map(|id| s.repo.key(*id))
+            .find(|k| k.steam_app_id.is_some())
+            .unwrap();
+        (k.id, k.steam_app_id.unwrap())
+    };
+    let (x, y) = rt.find(&format!("name-{id}")).expect("name cell");
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.hover.is_some_and(|h| h.key == id && !h.open));
+    assert!(rt.find("game-card").is_none(), "not before the delay");
+
+    poll_until(&mut rt, 30.0, |s| {
+        s.session().unwrap().repo.app_info(app).is_some()
+            && s.info.art(app).is_some_and(|i| i.is_ready())
+    });
+    assert!(rt.find("game-card").is_some(), "open after the delay");
+    let s = rt.state.session().unwrap();
+    let info = s.repo.app_info(app).unwrap();
+    assert_eq!(info.tags, vec!["Metroidvania".to_string()]);
+    assert_eq!(info.deck, keykeeper_core::DeckCompat::Verified);
+    assert!(
+        s.repo
+            .keys()
+            .iter()
+            .filter_map(|k| k.steam_app_id)
+            .all(|a| s.repo.app_info(a).is_some()),
+        "the whole library's details came in one batch"
+    );
+    assert_eq!(
+        downloads.lock().unwrap().as_slice(),
+        [format!(
+            "https://shared.akamai.steamstatic.com/{app}/header.jpg"
+        )]
+    );
+
+    // The artwork is cached encrypted next to the vault: a fresh session reads it from disk.
+    let cache = rt.state.info.cache().unwrap().clone();
+    let cached = cache.get(&format!("art-{app}")).expect("cached");
+    assert_eq!(cached, include_bytes!("../assets/icon-32.png"));
+    let names: Vec<String> = std::fs::read_dir(cache.dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.contains(&app.to_string())),
+        "{names:?}"
+    );
+    let raw = std::fs::read(cache.dir().join(&names[0])).unwrap();
+    assert!(!raw.windows(4).any(|w| w == b"\x89PNG"), "stored encrypted");
+
+    // Leaving the name closes the card.
+    rt.pointer_move(2.0, 2.0);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.hover.is_none());
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("game-card").is_none());
+
+    // Clearing the cache from Settings deletes it.
+    rt.update(|s, _| s.clear_art_cache());
+    assert_eq!(cache.size(), 0);
+}
+
+#[test]
+fn hover_cards_can_be_turned_off_and_fetching_can_be_refused() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    rt.update(|s, _| {
+        s.config.hover_cards = Some(false);
+        s.config.fetch_store_info = Some(false);
+    });
+    let id = rt.state.session().unwrap().rows[0];
+    let (x, y) = rt.find(&format!("name-{id}")).unwrap();
+    rt.pointer_move(x, y);
+    poll(&mut rt, 30.0);
+    assert!(rt.state.hover.is_none());
+    assert!(rt.find("game-card").is_none());
+
+    rt.update(|s, _| s.config.hover_cards = Some(true));
+    rt.pointer_move(2.0, 2.0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    poll(&mut rt, 40.0);
+    std::thread::sleep(Duration::from_millis(50));
+    poll(&mut rt, 41.0);
+    assert!(rt.find("game-card").is_some(), "the card shows local data");
+    assert!(downloads.lock().unwrap().is_empty(), "nothing fetched");
+    assert!(rt.state.session().unwrap().repo.data().app_info.is_empty());
+}
+
+// ── row menu and keyboard ─────────────────────────────────────────────────────────────────────
+
+fn right_click(rt: &mut Runtime<AppState>, key: &str) {
+    let (x, y) = rt
+        .find(key)
+        .unwrap_or_else(|| panic!("no element '{key}' on screen"));
+    rt.secondary_down(x, y);
+    rt.secondary_up(x, y);
+    rt.frame(1.0 / 60.0);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+}
+
+#[test]
+fn right_click_menu_acts_on_the_row_or_the_selection() {
+    let mut rt = demo_rt();
+    let (a, b) = {
+        let s = rt.state.session().unwrap();
+        let avail: Vec<_> = s
+            .rows
+            .iter()
+            .copied()
+            .filter(|id| {
+                let k = s.repo.key(*id).unwrap();
+                k.status == KeyStatus::Available && k.steam_app_id.is_some()
+            })
+            .collect();
+        (avail[0], avail[1])
+    };
+    right_click(&mut rt, &format!("name-{a}"));
+    assert!(rt.find("menu-edit").is_some(), "single-key menu");
+    assert!(rt.find("menu-link-steam").is_some());
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .table
+            .is_selected(&a.to_string())
+    );
+    click(&mut rt, "menu-cart");
+    rt.frame(1.0 / 60.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.row_menu.is_none(), "choosing closes the menu");
+    assert!(s.in_cart(a));
+
+    // With two rows selected, the menu acts on both.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(b.to_string());
+    });
+    rt.update(|s, _| s.set_status(&[b], KeyStatus::Available));
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.clear_selection();
+    });
+    let c = rt
+        .state
+        .session()
+        .unwrap()
+        .rows
+        .iter()
+        .copied()
+        .find(|id| *id != a && *id != b)
+        .unwrap();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(b.to_string());
+    });
+    rt.frame(1.0 / 60.0);
+    // Shift-extend the selection in state, as a shift-click would.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let ids = vec![b, c];
+        x.row_menu = None;
+        x.table.clear_selection();
+        for id in &ids {
+            x.table.select(id.to_string());
+        }
+    });
+    rt.update(|s, _| s.open_row_menu(b, None));
+    rt.frame(1.0 / 60.0);
+    let menu_ids = rt
+        .state
+        .session()
+        .unwrap()
+        .row_menu
+        .as_ref()
+        .unwrap()
+        .ids
+        .clone();
+    assert!(menu_ids.contains(&b));
+    rt.update(|s, _| s.close_row_menu());
+    // Let the closed menu leave the modal stack before opening it again.
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+
+    right_click(&mut rt, &format!("name-{b}"));
+    if rt.find("menu-delete").is_none() {
+        // Some platforms treat the first press after a menu closes as a dismissal.
+        right_click(&mut rt, &format!("name-{b}"));
+    }
+    click(&mut rt, "menu-delete");
+    assert!(matches!(
+        rt.state.session().unwrap().confirm,
+        Some(Confirm::DeleteKeys(_))
+    ));
+    rt.key(KeyEvent::from(Key::Escape));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().confirm.is_none());
+}
+
+#[test]
+fn status_submenu_and_keyboard_menu() {
+    let mut rt = demo_rt();
+    let id = rt.state.session().unwrap().rows[0];
+    rt.update(|s, _| {
+        s.session_mut().unwrap().table.select(id.to_string());
+    });
+    rt.key(KeyEvent::from(Key::ContextMenu));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(
+        rt.find("menu-status").is_some(),
+        "Menu key opens the row menu"
+    );
+    rt.update(|s, _| s.set_row_menu_status_open(true));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "menu-status-gifted");
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.repo.key(id).unwrap().status, KeyStatus::Gifted);
+    assert!(s.row_menu.is_none());
+}
+
+fn key(k: Key) -> KeyEvent {
+    KeyEvent {
+        key: k,
+        mods: Mods::default(),
+    }
+}
+
+#[test]
+fn arrows_ctrl_b_and_ctrl_c_drive_the_library() {
+    let mut rt = demo_rt();
+    let rows = rt.state.session().unwrap().rows.clone();
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    assert_eq!(rt.state.session().unwrap().cursor_id(), Some(rows[0]));
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(key(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(key(Key::Up));
+    rt.frame(1.0 / 60.0);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.cursor_id(), Some(rows[1]));
+    assert_eq!(
+        s.form.as_ref().and_then(|f| f.target),
+        Some(rows[1]),
+        "opens like a click"
+    );
+
+    // An available key: Ctrl+Enter puts it in the cart, and again takes it out.
+    let id = {
+        let s = rt.state.session().unwrap();
+        *rows
+            .iter()
+            .find(|id| s.repo.key(**id).unwrap().status == KeyStatus::Available)
+            .unwrap()
+    };
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('b'));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().in_cart(id));
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('b'));
+    rt.frame(1.0 / 60.0);
+    assert!(!rt.state.session().unwrap().in_cart(id));
+
+    rt.update(|s, _| s.session_mut().unwrap().table.select(id.to_string()));
+    rt.key(ctrl('c'));
+    rt.frame(1.0 / 60.0);
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.starts_with("Copied key"))
+    );
+
+    rt.key(key(Key::Function(2)));
+    rt.frame(1.0 / 60.0);
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .form
+            .as_ref()
+            .and_then(|f| f.target),
+        Some(id)
+    );
+}
+
+// ── bulk edit and undo toasts ─────────────────────────────────────────────────────────────────
+
+fn select_rows(rt: &mut Runtime<AppState>, n: usize) -> Vec<uuid::Uuid> {
+    let ids: Vec<_> = rt.state.session().unwrap().rows[..n].to_vec();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        for id in &ids {
+            x.table.select(id.to_string());
+        }
+    });
+    rt.frame(1.0 / 60.0);
+    ids
+}
+
+#[test]
+fn bulk_edit_changes_only_what_was_filled_in_as_one_undo_step() {
+    let mut rt = demo_rt();
+    let ids = select_rows(&mut rt, 1);
+    // `select` replaces the selection; build a multi-selection by hand.
+    let ids: Vec<_> = {
+        let rows = rt.state.session().unwrap().rows.clone();
+        let mut v = ids;
+        v.extend(rows[1..3].iter().copied());
+        v
+    };
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.bulk = Some(crate::bulk::BulkForm::new(ids.clone()));
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("bulk-edit").is_some());
+    let before: Vec<_> = ids
+        .iter()
+        .map(|id| rt.state.session().unwrap().repo.key(*id).unwrap().clone())
+        .collect();
+    rt.update(|s, _| {
+        s.with_bulk(|b| {
+            b.bundle = TextEdit::new("Bulk Bundle");
+            b.add_tags = TextEdit::new("bulk");
+        })
+    });
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "bulk-edit-apply");
+    let s = rt.state.session().unwrap();
+    assert!(s.bulk.is_none(), "applying closes the pane");
+    for (id, old) in ids.iter().zip(&before) {
+        let k = s.repo.key(*id).unwrap();
+        assert_eq!(k.bundle.as_deref(), Some("Bulk Bundle"));
+        assert!(k.tags.contains(&"bulk".to_string()));
+        assert_eq!(k.status, old.status, "status untouched");
+        assert_eq!(k.redemption_deadline, old.redemption_deadline);
+    }
+    let toast = rt.state.toasts.last().unwrap();
+    assert!(toast.undo && toast.title == "Updated 3 keys");
+    let tid = toast.id;
+    rt.update(|s, _| s.undo_from_toast(tid));
+    let s = rt.state.session().unwrap();
+    for (id, old) in ids.iter().zip(&before) {
+        assert_eq!(
+            s.repo.key(*id).unwrap().bundle,
+            old.bundle,
+            "one undo reverts all"
+        );
+    }
+
+    // Marking keys redeemed in bulk asks first.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.bulk = Some(crate::bulk::BulkForm::new(ids.clone()));
+    });
+    rt.update(|s, _| s.with_bulk(|b| b.status = Some(KeyStatus::Redeemed)));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "bulk-edit-apply");
+    assert_eq!(rt.state.session().unwrap().confirm, Some(Confirm::BulkEdit));
+    click(&mut rt, "confirm-ok");
+    let s = rt.state.session().unwrap();
+    assert!(
+        ids.iter()
+            .all(|id| s.repo.key(*id).unwrap().status == KeyStatus::Redeemed)
+    );
+}
+
+#[test]
+fn bulk_bar_and_row_menu_open_the_bulk_editor() {
+    let mut rt = demo_rt();
+    let rows = rt.state.session().unwrap().rows.clone();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.table.select(rows[0].to_string());
+    });
+    rt.frame(1.0 / 60.0);
+    // Ctrl+A selects every row once the table has focus.
+    rt.key(KeyEvent::from(Key::Down));
+    rt.frame(1.0 / 60.0);
+    rt.key(ctrl('a'));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().selected_ids().len() > 2);
+    let n = rt.state.session().unwrap().selected_ids().len();
+    assert!(n > 2);
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "bulk-edit-open");
+    assert!(rt.state.session().unwrap().bulk.is_some());
+    assert!(rt.find("bulk-edit").is_some());
+    rt.key(KeyEvent::from(Key::Escape));
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.session().unwrap().bulk.is_none());
+}
+
+// ── at a glance ───────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn stats_count_tradable_keys_value_and_deadlines() {
+    let mut rt = demo_rt();
+    let today = jiff::civil::date(2026, 11, 26);
+    let st = rt.state.session().unwrap().stats(today);
+    assert_eq!(st.total, 18);
+    // Demo deadlines: Dredge 11/20 (past), Celeste 12/2 (reserved, still held), Haiku 12/15,
+    // Tunic 2027-03-01 (far).
+    assert_eq!(st.expired, 1);
+    assert_eq!(st.expiring, 3);
+    let s = rt.state.session().unwrap();
+    let tradable = s
+        .repo
+        .keys()
+        .iter()
+        .filter(|k| k.status.can_trade())
+        .count();
+    assert_eq!(st.tradable, tradable);
+    assert!(st.priced > 0 && st.priced <= tradable);
+    assert_eq!(st.value.as_ref().unwrap().currency, "USD");
+
+    click(&mut rt, "stat-expiring");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.deadline_soon);
+    assert_eq!(s.rows.len(), s.stats(crate::app::today()).expiring);
+    click(&mut rt, "stat-tradable");
+    poll(&mut rt, 0.0);
+    assert_eq!(
+        rt.state.session().unwrap().statuses,
+        vec![KeyStatus::Available]
+    );
+    assert!(rt.find("nav-expiring").is_some(), "sidebar badge");
+}
+
+// ── trading helpers ───────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn spares_and_duplicates_filters_and_have_list() {
+    let mut rt = demo_rt();
+    let board = rune::clipboard::memory();
+    rt.use_clipboard(&board);
+
+    click(&mut rt, "filter-fodder");
+    poll(&mut rt, 0.0);
+    // Demo: Undertale and Hollow Knight are owned, but both keys are already traded.
+    assert!(shown(&rt).is_empty());
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let id = x
+            .repo
+            .keys()
+            .iter()
+            .find(|k| k.game_name == "Hollow Knight")
+            .unwrap()
+            .id;
+        let _ = x.repo.update_key(id, |k| k.status = KeyStatus::Available);
+    });
+    poll(&mut rt, 0.0);
+    assert_eq!(shown(&rt), ["Hollow Knight"]);
+    click(&mut rt, "filter-fodder");
+
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        let mut k = keykeeper_core::GameKey::new("Tunic", "TUN1C-SECND-COPY2");
+        k.steam_app_id = Some(553420);
+        x.repo.add_key(k);
+    });
+    click(&mut rt, "filter-dupes");
+    poll(&mut rt, 0.0);
+    assert_eq!(shown(&rt), ["Tunic", "Tunic"]);
+
+    click(&mut rt, "copy-have-list");
+    assert_eq!(
+        board.text().as_deref().map(String::as_str),
+        Some("Tunic x2")
+    );
+    click(&mut rt, "filter-dupes");
+    poll(&mut rt, 0.0);
+    click(&mut rt, "copy-have-list");
+    let text = board.text().unwrap().to_string();
+    assert!(text.contains("Hollow Knight") && text.contains("Tunic x2"));
+    assert!(
+        !text.contains("Undertale"),
+        "traded keys aren't on the list"
+    );
+    assert!(!text.contains('-'), "no keys: {text}");
+}
+
+// ── table layout ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn column_menu_hides_columns_and_the_layout_survives_a_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("v.kkvault");
+    let cfg = dir.path().join("config.toml");
+    Vault::create(
+        &vault,
+        "pw-12345678",
+        KdfParams::INSECURE_FAST_FOR_TESTS,
+        &demo::sample_data(),
+    )
+    .unwrap();
+    let mut s = state_for(&vault);
+    s.config_path = Some(cfg.clone());
+    let mut rt = runtime(s);
+    rt.update(|s, _| s.lock_ui_mut().unwrap().password = TextEdit::new("pw-12345678"));
+    click(&mut rt, "lock-submit");
+    wait_for_unlock_result(&mut rt);
+    poll(&mut rt, 0.0);
+
+    right_click(&mut rt, "library-table");
+    // The click landed on a row (no header there): open the header menu by hand instead.
+    rt.update(|s, _| {
+        s.close_row_menu();
+        s.session_mut().unwrap().header_menu = Some(rune::PointerPress { x: 600.0, y: 300.0 });
+    });
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "col-platform");
+    assert!(
+        rt.state
+            .session()
+            .unwrap()
+            .table
+            .is_column_hidden("platform")
+    );
+    rt.update(|s, _| {
+        s.sort_by("name", rune_kit::SortDir::Ascending);
+        s.toggle_group_by_bundle();
+        s.set_density(crate::config::Density::Compact);
+    });
+    poll(&mut rt, 1.0);
+    poll(&mut rt, 3.0);
+    let saved = Config::load(&cfg);
+    assert_eq!(
+        saved.library.hidden_columns,
+        vec!["platform".to_string(), "added".to_string()]
+    );
+    assert_eq!(saved.library.sort.as_deref(), Some("name:asc"));
+    assert!(saved.library.group_by_bundle);
+    assert_eq!(saved.library.density, crate::config::Density::Compact);
+
+    // Lock and unlock: the table comes back the same.
+    rt.key(ctrl('l'));
+    rt.frame(1.0 / 60.0);
+    rt.update(|s, _| s.lock_ui_mut().unwrap().password = TextEdit::new("pw-12345678"));
+    click(&mut rt, "lock-submit");
+    wait_for_unlock_result(&mut rt);
+    poll(&mut rt, 4.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.table.is_column_hidden("platform"));
+    assert!(s.group_by_bundle);
+    assert_eq!(s.sort.field, keykeeper_core::SortField::Name);
+}
+
+#[test]
+fn grouping_by_bundle_folds_and_unfolds() {
+    let mut rt = demo_rt();
+    rt.update(|s, _| s.toggle_group_by_bundle());
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    let groups: Vec<String> = s
+        .display
+        .iter()
+        .filter_map(|r| match r {
+            crate::layout::DisplayRow::Group { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        groups.last().map(String::as_str),
+        Some(crate::layout::NO_BUNDLE)
+    );
+    assert!(groups.contains(&"Humble Choice".to_string()));
+    let n = s.display.len();
+    assert_eq!(n, s.rows.len() + groups.len());
+
+    let first = groups[0].clone();
+    // Enter on a bundle header (keyboard cursor on it) folds it, through the table's handler.
+    rt.update(|s, tx| {
+        let x = s.session_mut().unwrap();
+        x.table.select(crate::layout::group_row_id(&first));
+        tx.focus("library-table", false);
+    });
+    rt.frame(1.0 / 60.0);
+    rt.key(KeyEvent::from(Key::Enter));
+    rt.frame(1.0 / 60.0);
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert!(s.collapsed.contains(&first), "{first} folds");
+    let humble = s
+        .rows
+        .iter()
+        .filter(|id| s.repo.key(**id).unwrap().bundle.as_deref() == Some(first.as_str()))
+        .count();
+    assert_eq!(s.display.len(), n - humble, "its keys are hidden");
+    assert_eq!(
+        s.selected_ids(),
+        Vec::<uuid::Uuid>::new(),
+        "a header isn't a key"
+    );
+
+    rt.update(|s, _| s.collapse_all_groups(true));
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().display.len(), groups.len());
+    rt.update(|s, _| s.collapse_all_groups(false));
+    poll(&mut rt, 0.0);
+    assert_eq!(rt.state.session().unwrap().display.len(), n);
+}
+
+// ── grid ──────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn grid_view_shows_cards_that_open_and_fetches_their_art() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    rt.update(|s, _| s.set_library_view(crate::config::LibraryView::Grid));
+    poll_until(&mut rt, 1.0, |s| {
+        let x = s.session().unwrap();
+        x.rows
+            .iter()
+            .filter_map(|id| x.repo.key(*id).and_then(|k| k.steam_app_id))
+            .all(|a| s.info.art(a).is_some_and(|i| i.is_ready()))
+    });
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("library-grid").is_some());
+    assert!(rt.find("library-table").is_none());
+    let with_app = rt
+        .state
+        .session()
+        .unwrap()
+        .rows
+        .iter()
+        .filter(|id| {
+            rt.state
+                .session()
+                .unwrap()
+                .repo
+                .key(**id)
+                .is_some_and(|k| k.steam_app_id.is_some())
+        })
+        .count();
+    assert_eq!(
+        downloads.lock().unwrap().len(),
+        with_app,
+        "one image per game"
+    );
+
+    let id = rt.state.session().unwrap().rows[0];
+    click(&mut rt, &format!("name-{id}"));
+    let s = rt.state.session().unwrap();
+    assert!(s.table.is_selected(&id.to_string()));
+    assert_eq!(s.form.as_ref().and_then(|f| f.target), Some(id));
+    let has_app = s.repo.key(id).unwrap().steam_app_id.is_some();
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("form-art").is_some() || !has_app);
+
+    right_click(&mut rt, &format!("name-{id}"));
+    assert!(rt.find("menu-edit").is_some(), "cards have the row menu");
+}
+
+// ── polish ────────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn date_picker_fills_the_field_in_the_date_format() {
+    let mut rt = demo_rt();
+    let id = rt.state.session().unwrap().rows[0];
+    rt.update(|s, _| s.open_key(id));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "pick-deadline");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    let month = rt
+        .state
+        .session()
+        .unwrap()
+        .form
+        .as_ref()
+        .unwrap()
+        .date_pick
+        .unwrap()
+        .month;
+    rt.update(|s, _| s.date_pick_month(1));
+    rt.frame(1.0 / 60.0);
+    let next = month.checked_add(jiff::Span::new().months(1)).unwrap();
+    let day = next.with().day(15).build().unwrap();
+    for _ in 0..10 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, &format!("pick-day-{day}"));
+    let f = rt.state.session().unwrap().form.as_ref().unwrap();
+    assert!(f.date_pick.is_none(), "choosing closes it");
+    assert_eq!(
+        f.deadline.text,
+        crate::form::format_date(Some(day), keykeeper_core::DateFormat::MonthDayYear)
+    );
+    rt.update(|s, _| s.toggle_date_pick("deadline"));
+    rt.update(|s, _| s.pick_date(None));
+    assert_eq!(
+        rt.state
+            .session()
+            .unwrap()
+            .form
+            .as_ref()
+            .unwrap()
+            .deadline
+            .text,
+        ""
+    );
+}
+
+#[test]
+fn no_matches_offers_to_clear_filters_and_delete_offers_undo() {
+    let mut rt = demo_rt();
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.search.replace_text("zzz no such game");
+        x.duplicates = true;
+        x.filters_changed();
+    });
+    poll(&mut rt, 0.0);
+    assert!(rt.find("library-no-matches").is_some());
+    click(&mut rt, "clear-filters");
+    poll(&mut rt, 0.0);
+    let s = rt.state.session().unwrap();
+    assert_eq!(s.rows.len(), 18);
+    assert!(s.search.text.is_empty() && !s.duplicates);
+
+    let id = s.rows[0];
+    rt.update(|s, _| s.ask_delete(vec![id]));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "confirm-ok");
+    let t = rt.state.toasts.last().unwrap();
+    assert!(t.undo && t.title == "Deleted 1 key");
+    let tid = t.id;
+    rt.update(|s, _| s.undo_from_toast(tid));
+    assert!(rt.state.session().unwrap().repo.key(id).is_some(), "undone");
+    assert!(rt.state.toasts.iter().all(|t| t.id != tid));
 }

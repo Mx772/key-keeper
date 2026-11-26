@@ -27,6 +27,7 @@ use keykeeper_steam::SteamApi;
 /// Unsaved changes reach disk this long after the last edit.
 pub const AUTOSAVE_DELAY: f64 = 1.5;
 const TOAST_SECS: f64 = 3.5;
+const UNDO_TOAST_SECS: f64 = 7.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -72,6 +73,8 @@ pub struct Toast {
     pub detail: Option<String>,
     pub error: bool,
     pub until: f64,
+    /// Shows an Undo button (the change it reports is the newest undo step).
+    pub undo: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +117,8 @@ pub enum Confirm {
     CancelTrade(Uuid),
     /// Self-checkout: mark every key in the cart as redeemed on my account.
     RedeemCart,
+    /// Apply the open bulk edit.
+    BulkEdit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,12 +176,28 @@ pub struct Session {
     pub sort: Sort,
     pub query_rev: u64,
     pub rows: Vec<Uuid>,
+    /// What the table shows, row by row (keys, and bundle headers when grouping).
+    pub display: Vec<crate::layout::DisplayRow>,
+    /// Ids of `display`'s rows, for the table.
     pub row_ids: Vec<String>,
+    pub group_by_bundle: bool,
+    /// Bundles folded shut while grouping.
+    pub collapsed: std::collections::HashSet<String>,
+    /// The library's View menu, its Columns submenu, and the column menu on a header.
+    pub view_menu: bool,
+    /// The library header's Steam actions menu.
+    pub steam_menu: bool,
+    pub view_columns_open: bool,
+    pub header_menu: Option<rune::PointerPress>,
     rows_stamp: Option<(u64, u64)>,
     pub table: TableState,
     pub form: Option<KeyForm>,
     pub confirm: Option<Confirm>,
     pub bulk_status_open: bool,
+    /// The right-click menu on library rows.
+    pub row_menu: Option<crate::library_actions::RowMenu>,
+    /// Editing several keys at once (shown in the editor pane).
+    pub bulk: Option<crate::bulk::BulkForm>,
     /// The keyboard shortcuts overlay.
     pub shortcuts_open: bool,
     // other pages
@@ -188,6 +209,9 @@ pub struct Session {
     pub candidates: Option<Candidates>,
     pub steam_ui: SteamUi,
     pub missing_app_id: bool,
+    /// Filters: spares of games I own on Steam, and games with several keys.
+    pub trade_fodder: bool,
+    pub duplicates: bool,
     // persistence
     seen_gen: u64,
     dirty_since: Option<f64>,
@@ -226,12 +250,21 @@ impl Session {
             sort: Sort::default(),
             query_rev: 0,
             rows: Vec::new(),
+            display: Vec::new(),
             row_ids: Vec::new(),
+            group_by_bundle: false,
+            collapsed: std::collections::HashSet::new(),
+            view_menu: false,
+            steam_menu: false,
+            view_columns_open: false,
+            header_menu: None,
             rows_stamp: None,
             table: TableState::new().key("library-table").multi_select(true),
             form: None,
             confirm: None,
             bulk_status_open: false,
+            row_menu: None,
+            bulk: None,
             shortcuts_open: false,
             import: ImportUi::new(date_format),
             settings_ui: SettingsUi::default(),
@@ -241,6 +274,8 @@ impl Session {
             candidates: None,
             steam_ui,
             missing_app_id: false,
+            trade_fodder: false,
+            duplicates: false,
             seen_gen: gen_,
             dirty_since: None,
             save_error: None,
@@ -275,6 +310,8 @@ impl Session {
             statuses,
             deadline_within_days: self.deadline_soon.then_some(30),
             missing_app_id: self.missing_app_id,
+            trade_fodder: self.trade_fodder,
+            duplicates: self.duplicates,
             sort: self.sort,
             ..Query::default()
         }
@@ -287,7 +324,7 @@ impl Session {
             return false;
         }
         self.rows = self.repo.query(&self.query(), today);
-        self.row_ids = self.rows.iter().map(Uuid::to_string).collect();
+        self.rebuild_display();
         self.rows_stamp = Some(stamp);
         true
     }
@@ -358,6 +395,25 @@ pub struct AppState {
     /// Keys were just added to the cart: the floating cart button springs up until this time.
     cart_bump_until: f64,
     pub(crate) cart_bump_pending: bool,
+    /// When to write the library layout to config.toml (after a column drag settles).
+    pub(crate) layout_save_at: Option<f64>,
+    /// Store details and artwork (hover card, grid, editor header).
+    pub info: crate::info::GameInfo,
+    /// The game name the pointer is resting on, for the hover card.
+    pub hover: Option<Hover>,
+    /// Screenshot / test sessions never fetch from Steam.
+    pub offline: bool,
+    /// The window's last laid-out size and maximized state, saved on close.
+    pub window_seen: std::cell::Cell<Option<crate::config::WindowSize>>,
+}
+
+/// The pointer is resting on a game's name (or grid card).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hover {
+    pub key: Uuid,
+    /// When the pointer arrived (app clock).
+    pub since: f64,
+    pub open: bool,
 }
 
 pub fn today() -> Date {
@@ -388,6 +444,11 @@ impl AppState {
             updates: Updates::new(crate::update::real_source()),
             cart_bump_until: 0.0,
             cart_bump_pending: false,
+            layout_save_at: None,
+            info: crate::info::GameInfo::default(),
+            hover: None,
+            offline: false,
+            window_seen: std::cell::Cell::new(None),
         }
     }
 
@@ -427,6 +488,15 @@ impl AppState {
         matches!(self.screen, Screen::Unlocked(_))
     }
 
+    /// Change a preference in `config.toml` and save it.
+    pub fn update_config(&mut self, f: impl FnOnce(&mut Config)) {
+        let before = self.config.clone();
+        f(&mut self.config);
+        if self.config != before {
+            self.save_config();
+        }
+    }
+
     pub(crate) fn save_config(&mut self) {
         if let Some(p) = &self.config_path
             && let Err(e) = self.config.save(p)
@@ -439,6 +509,25 @@ impl AppState {
 
     pub fn toast(&mut self, title: impl Into<String>) {
         self.push_toast(title.into(), None, false);
+    }
+
+    /// A toast for a change that can be undone, with an Undo button when `undoable`.
+    pub fn toast_undo(&mut self, title: impl Into<String>, undoable: bool) {
+        self.push_toast(title.into(), None, false);
+        if undoable && let Some(t) = self.toasts.last_mut() {
+            t.undo = true;
+            t.until = self.now + UNDO_TOAST_SECS;
+        }
+    }
+
+    /// The Undo button on a toast: undo, and drop the toast.
+    pub fn undo_from_toast(&mut self, id: u64) {
+        self.dismiss_toast(id);
+        // Older undo toasts describe steps under this one; they no longer match.
+        for t in &mut self.toasts {
+            t.undo = false;
+        }
+        self.undo();
     }
 
     pub fn toast_detail(&mut self, title: impl Into<String>, detail: impl Into<String>) {
@@ -458,6 +547,7 @@ impl AppState {
             detail,
             error,
             until,
+            undo: false,
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -602,8 +692,15 @@ impl AppState {
         true
     }
 
+    pub fn mark_offline(&mut self) {
+        self.offline = true;
+    }
+
     pub fn open_session(&mut self, vault: Vault, data: VaultData) {
+        self.info.attach(vault.blob_cache());
+        self.hover = None;
         let mut session = Session::new(vault, data);
+        session.apply_layout(&self.config.library);
         session.refresh_rows(today());
         self.screen = Screen::Unlocked(Box::new(session));
         self.last_activity = self.now;
@@ -626,6 +723,8 @@ impl AppState {
         tx.clear_secret_clipboard();
         self.screen = Screen::Locked(Box::new(LockUi::for_path(path)));
         self.toasts.clear();
+        self.info.reset();
+        self.hover = None;
     }
 
     // ── per-frame upkeep ──
@@ -636,6 +735,10 @@ impl AppState {
         self.now = now;
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
+        changed |= self.finish_info();
+        self.want_grid_art();
+        self.poll_layout(now, tx);
+        changed |= self.poll_hover(now, tx);
         changed |= self.poll_updates(now, tx);
         if std::mem::take(&mut self.cart_bump_pending) {
             self.cart_bump_until = now + 0.3;
@@ -716,6 +819,15 @@ impl AppState {
 
     /// Window closing: flush unsaved changes and clear a copied key.
     pub fn on_close(&mut self, tx: &mut Tx) {
+        let window = self.window_seen.get().filter(|_| !self.offline);
+        if self.layout_save_at.take().is_some()
+            || (window.is_some() && window != self.config.window)
+        {
+            if window.is_some() {
+                self.config.window = window;
+            }
+            self.save_config();
+        }
         if let Screen::Unlocked(s) = &mut self.screen {
             s.sync_trade_form();
             if s.is_dirty() {
@@ -728,10 +840,12 @@ impl AppState {
     // ── navigation ──
 
     pub fn go(&mut self, page: Page) {
+        self.hover = None;
         if let Some(s) = self.session_mut() {
             s.sync_trade_form();
             s.page = page;
             s.bulk_status_open = false;
+            s.row_menu = None;
             s.refresh_trade_form();
         }
     }
@@ -785,6 +899,10 @@ impl AppState {
             && let Some(k) = s.repo.key(id)
         {
             s.form = Some(KeyForm::from_key(k, s.date_format()));
+            s.bulk = None;
+            if let Some(app) = k.steam_app_id {
+                self.want_info(app);
+            }
         }
     }
 
@@ -892,15 +1010,15 @@ impl AppState {
                 {
                     s.form = None;
                 }
-                self.toast(format!(
-                    "Deleted {n} key{} — {} to undo",
-                    if n == 1 { "" } else { "s" },
-                    crate::ui::shortcut("Ctrl+Z"),
-                ));
+                self.toast_undo(
+                    format!("Deleted {n} key{}", if n == 1 { "" } else { "s" }),
+                    n > 0,
+                );
             }
             Confirm::ExportPlain(kind) => self.export_plain(kind, tx),
             Confirm::CancelTrade(id) => self.cancel_trade_now(id),
             Confirm::RedeemCart => self.redeem_cart_now(),
+            Confirm::BulkEdit => self.apply_bulk_now(),
         }
     }
 
@@ -929,7 +1047,7 @@ impl AppState {
         if let Ok(n) = res
             && n > 0
         {
-            self.toast(format!("Marked {n} as {}", status.label()));
+            self.toast_undo(format!("Marked {n} as {}", status.label()), true);
         }
     }
 
@@ -964,6 +1082,20 @@ impl AppState {
         }
     }
 
+    /// Back to every key: no search, no status or other filters.
+    pub fn clear_all_filters(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.search.replace_text("");
+            s.statuses.clear();
+            s.hide_gone = false;
+            s.deadline_soon = false;
+            s.missing_app_id = false;
+            s.trade_fodder = false;
+            s.duplicates = false;
+            s.filters_changed();
+        }
+    }
+
     pub fn clear_status_filter(&mut self) {
         if let Some(s) = self.session_mut() {
             s.statuses.clear();
@@ -985,6 +1117,40 @@ impl AppState {
         }
     }
 
+    pub fn toggle_trade_fodder(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.trade_fodder = !s.trade_fodder;
+            s.filters_changed();
+        }
+    }
+
+    pub fn toggle_duplicates(&mut self) {
+        if let Some(s) = self.session_mut() {
+            s.duplicates = !s.duplicates;
+            s.filters_changed();
+        }
+    }
+
+    /// Copy the game names of the tradable keys in view, for a trading site's "have" list.
+    pub fn copy_have_list(&mut self, tx: &mut Tx) {
+        let Some(s) = self.session() else { return };
+        let line = s.repo.data().templates.have_line.clone();
+        match keykeeper_core::template::have_list(&s.repo, &s.rows, &line) {
+            Ok((_, 0)) => self.toast("No tradable keys in view (Available or Unknown)"),
+            Ok((text, n)) => {
+                tx.copy(text);
+                self.toast_detail(
+                    format!(
+                        "Copied a have list of {n} game{}",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    "Game names only, no keys. Change the line format in Settings › Templates.",
+                );
+            }
+            Err(e) => self.toast_error("Couldn't build the have list", e.to_string()),
+        }
+    }
+
     pub fn toggle_deadline_soon(&mut self) {
         if let Some(s) = self.session_mut() {
             s.deadline_soon = !s.deadline_soon;
@@ -993,24 +1159,9 @@ impl AppState {
     }
 
     pub fn sort_by(&mut self, column: &str, dir: rune_kit::SortDir) {
-        let field = match column {
-            "name" => SortField::Name,
-            "bundle" => SortField::Bundle,
-            "status" => SortField::Status,
-            "platform" => SortField::Platform,
-            "deadline" => SortField::Deadline,
-            "source" => SortField::Source,
-            "rating" => SortField::Rating,
-            "deals" => SortField::Price,
-            _ => SortField::Added,
-        };
-        let dir = if matches!(dir, rune_kit::SortDir::Descending) {
-            SortDir::Desc
-        } else {
-            SortDir::Asc
-        };
         if let Some(s) = self.session_mut() {
-            s.sort = Sort { field, dir };
+            s.sort = sort_for(column, dir);
+            s.table.set_sort(column.to_string(), dir);
             s.filters_changed();
         }
     }
@@ -1229,10 +1380,14 @@ impl AppState {
     /// App-wide shortcuts. Text fields get keys first, so these only see unclaimed ones.
     pub fn on_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
         self.touch(tx);
+        self.hover = None;
         if !self.is_unlocked() {
             return false;
         }
         let ctrl = e.mods.cmd || e.mods.ctrl;
+        if self.library_key(e, tx) {
+            return true;
+        }
         match &e.key {
             rune::Key::Command(c) if ctrl => match c.to_ascii_lowercase() {
                 'f' => {
@@ -1303,7 +1458,15 @@ impl AppState {
                 let Some(s) = self.session_mut() else {
                     return false;
                 };
+                if s.form.as_mut().and_then(|f| f.date_pick.take()).is_some() {
+                    return true;
+                }
                 if std::mem::take(&mut s.shortcuts_open)
+                    || std::mem::take(&mut s.view_menu)
+                    || std::mem::take(&mut s.steam_menu)
+                    || s.header_menu.take().is_some()
+                    || s.row_menu.take().is_some()
+                    || s.bulk.take().is_some()
                     || s.confirm.take().is_some()
                     || s.bulk_status_open
                     || s.form.take().is_some()
@@ -1316,6 +1479,27 @@ impl AppState {
             _ => false,
         }
     }
+}
+
+/// The query sort for a table column and direction.
+pub fn sort_for(column: &str, dir: rune_kit::SortDir) -> Sort {
+    let field = match column {
+        "name" => SortField::Name,
+        "bundle" => SortField::Bundle,
+        "status" => SortField::Status,
+        "platform" => SortField::Platform,
+        "deadline" => SortField::Deadline,
+        "source" => SortField::Source,
+        "rating" => SortField::Rating,
+        "deals" => SortField::Price,
+        _ => SortField::Added,
+    };
+    let dir = if matches!(dir, rune_kit::SortDir::Descending) {
+        SortDir::Desc
+    } else {
+        SortDir::Asc
+    };
+    Sort { field, dir }
 }
 
 fn refresh_form(s: &mut Session, fmt: DateFormat) {
