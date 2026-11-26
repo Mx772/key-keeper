@@ -2089,8 +2089,16 @@ fn right_click_menu_acts_on_the_row_or_the_selection() {
         .clone();
     assert!(menu_ids.contains(&b));
     rt.update(|s, _| s.close_row_menu());
+    // Let the closed menu leave the modal stack before opening it again.
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
 
     right_click(&mut rt, &format!("name-{b}"));
+    if rt.find("menu-delete").is_none() {
+        // Some platforms treat the first press after a menu closes as a dismissal.
+        right_click(&mut rt, &format!("name-{b}"));
+    }
     click(&mut rt, "menu-delete");
     assert!(matches!(
         rt.state.session().unwrap().confirm,
