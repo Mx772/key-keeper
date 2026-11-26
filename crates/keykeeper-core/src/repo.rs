@@ -210,6 +210,29 @@ impl Repo {
         n
     }
 
+    /// Add keys and insert/update trades as a single undo step (used by import).
+    pub fn import(&mut self, keys: Vec<GameKey>, trades: Vec<Trade>, label: &str) {
+        let mut edits: Vec<Edit> = keys
+            .into_iter()
+            .map(|k| Edit::Key {
+                id: k.id,
+                before: None,
+                after: Some(Box::new(k)),
+            })
+            .collect();
+        for t in trades {
+            let before = self.trade(t.id).cloned();
+            if before.as_ref() != Some(&t) {
+                edits.push(Edit::Trade {
+                    id: t.id,
+                    before: before.map(Box::new),
+                    after: Some(Box::new(t)),
+                });
+            }
+        }
+        self.commit(label, edits);
+    }
+
     // ── trade writes ──
 
     pub fn upsert_trade(&mut self, trade: Trade, label: &str) {

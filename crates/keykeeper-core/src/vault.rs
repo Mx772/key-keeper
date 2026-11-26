@@ -374,6 +374,15 @@ impl Vault {
         delete_backups(&self.path)
     }
 
+    /// Write an encrypted copy (same password) somewhere else, e.g. a manual backup.
+    /// Writing over the live vault path is refused; use [`Vault::save`] for that.
+    pub fn save_copy(&self, path: &Path, data: &VaultData) -> Result<(), VaultError> {
+        if path == self.path {
+            return Err(VaultError::AlreadyExists(path.to_path_buf()));
+        }
+        write_atomic(path, &self.keys.seal(data)?)
+    }
+
     pub fn verify_password(&self, password: &str) -> bool {
         self.keys.verify_password(password)
     }
