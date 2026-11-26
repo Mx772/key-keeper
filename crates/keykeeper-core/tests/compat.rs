@@ -58,7 +58,38 @@ fn fixture_data(app_version: &str) -> VaultData {
     d.settings.steam_id = Some("76561190000000000".into());
     d.api_keys.steam = Some(Secret::new("00000000000000000000000000000000"));
     d.last_app_version = Some(app_version.to_string());
+    if version_of(&d) < (0, 3, 0) {
+        return d;
+    }
+    // Added in 0.3.0: store details and the have-list template.
+    d.app_info.insert(
+        504230,
+        keykeeper_core::AppInfo {
+            name: "Celeste".into(),
+            description: "Fixture description.".into(),
+            developers: vec!["Fixture Dev".into()],
+            tags: vec!["Platformer".into()],
+            released: jiff::Timestamp::from_second(1_516_000_000).ok(),
+            deck: keykeeper_core::DeckCompat::Verified,
+            header_url: Some("https://shared.akamai.steamstatic.com/x/header.jpg".into()),
+            capsule_url: None,
+            fetched_at: jiff::Timestamp::from_second(1_764_000_000).unwrap(),
+        },
+    );
+    d.templates.have_line = "{name}{count} ({platform})".into();
     d
+}
+
+/// "0.2.1" → (0, 2, 1).
+fn version_of(d: &VaultData) -> (u64, u64, u64) {
+    let v: Vec<u64> = d
+        .last_app_version
+        .as_deref()
+        .unwrap_or("0.0.0")
+        .split('.')
+        .map(|p| p.parse().unwrap_or(0))
+        .collect();
+    (v[0], v[1], v[2])
 }
 
 /// What every fixture must contain, whichever version wrote it.
@@ -91,6 +122,22 @@ fn check(file: &Path, d: &VaultData) {
         Some("00000000000000000000000000000000".into()),
         "{name}"
     );
+    if version_of(d) >= (0, 3, 0) {
+        let info = d.app_info.get(&504230).expect("app info");
+        assert_eq!(info.tags, ["Platformer"], "{name}");
+        assert_eq!(info.deck, keykeeper_core::DeckCompat::Verified, "{name}");
+        assert_eq!(
+            d.templates.have_line, "{name}{count} ({platform})",
+            "{name}"
+        );
+    } else {
+        assert!(d.app_info.is_empty(), "{name}");
+        assert_eq!(
+            d.templates.have_line,
+            keykeeper_core::template::DEFAULT_HAVE_LINE,
+            "{name}: older vaults get the default"
+        );
+    }
 }
 
 fn fixtures() -> Vec<PathBuf> {
@@ -139,6 +186,7 @@ fn semver_like(v: &str) -> Option<()> {
 #[test]
 fn generated_data_passes_the_check() {
     check(Path::new("fixture_data"), &fixture_data("0.0.0"));
+    check(Path::new("fixture_data"), &fixture_data("0.3.0"));
 }
 
 /// Writes `tests/fixtures/vaults/v<this version>.kkvault`. Run before tagging a release (see the

@@ -11,26 +11,41 @@ Built in Rust with the [RUNE](https://github.com/anomalyco/rune) GPU UI framewor
 ## Features
 
 - **Encrypted vault.** All keys, trades and settings live in one file encrypted with your password. Argon2id derives the key, and the data is encrypted with XChaCha20-Poly1305. Saves are atomic, and the app keeps rotating encrypted backups. There is no password recovery.
-- **Library.** A fast, sortable table with search across names, bundles, notes, tags and keys. You can filter by status, upcoming redemption deadline, or missing Steam id. Keys stay masked until you reveal or copy them. Undo/redo covers every change.
+- **Library.** A fast, sortable table with search across names, bundles, notes, tags and keys. Keys stay masked until you reveal or copy them. Undo/redo covers every change, and toasts for most changes have an **Undo** button.
+  - **At a glance:** under the title, how many keys you still hold, how many are in the cart, what they're worth at today's cheapest prices, and how many redemption deadlines are near or past. Each figure is a shortcut to its filter, and the sidebar shows "N soon" when deadlines are close. Near deadlines read "in 12 days" / "6 days ago".
+  - **Filters:** status, hide traded & redeemed, deadline within 30 days, no Steam id, **Spares I own** (keys still in hand for games you already own on Steam) and **Duplicates** (games you have more than one key for).
+  - **Game details on hover:** rest the pointer on a game's name to see its artwork, developer, release year, tags, description, review score, Steam Deck status, ownership, best price and all-time low, deadline and bundle. You can turn it off or change the delay in Settings › Library.
+  - **Right-click menu** on any row (or the Menu key): edit, copy the key, cart, redeem, set status, open on Steam / gg.deals / IsThereAnyDeal, delete. With several rows selected it acts on all of them.
+  - **Bulk edit:** select several keys and choose **Edit…** to set status, platform, bundle, source or deadline, or add and remove tags, for all of them in one undo step.
+  - **View menu:** table or **grid with artwork**, comfortable or compact rows, **group by bundle** (foldable), and which columns to show (also by right-clicking a column header). Column widths, order, sort and view are remembered.
 - **Statuses.** Available, Reserved (in the cart), Traded, Redeemed, Gifted, Unknown.
 - **Import.** Reads CSV/TSV exports, Excel or Sheets pastes, and plain lists like `Game: XXXXX-XXXXX-XXXXX`. Columns are matched automatically and you can remap them. Dates follow a day-first or month-first setting. A preview marks each row as new, duplicate or error before anything is added.
 - **Export.** CSV (re-imports cleanly), JSON, or an encrypted backup copy.
 - **Trading.**
   - Add keys to a cart (a floating cart button shows the count) and copy the checkout text (`{name}: {key}` by default).
   - Record the partner, trade link and what you receive. Mark the trade as sent, then complete it: your keys become *Traded*, and received games can be added to your library.
-  - Generate a steamtrades reputation post. Both texts come from templates you can edit.
+  - Generate a steamtrades reputation post.
+  - **Copy have list** copies the names of the tradable keys in view (never the keys), one line per game with copies merged ("Tunic x2"), for a trading site's "have" list.
+  - All three texts come from templates you can edit in Settings › Templates.
 - **Steam.**
-  - Match games to Steam app ids, then fetch review scores.
+  - Match games to Steam app ids, then fetch review scores (the header's **Steam** menu).
   - Check your public wishlist, and your library if you add a Web API key.
+  - Store details and header art for the hover card, grid and editor come from Steam's store. Artwork is cached **encrypted** next to your vault (`<vault>.cache/`, file names don't reveal which games), and you can turn fetching off or clear the cache in Settings › Library.
   - Game names link to their Steam page, and the key editor has link buttons for Steam, gg.deals and IsThereAnyDeal.
   - **Redeem on Steam** opens Steam's activation page with the key filled in and marks the key Redeemed with today's date. Non-Steam keys get **Mark redeemed by me**. In the cart, each key has a Redeem button, and **Self-checkout** marks every cart key redeemed.
-- **Prices.** With an IsThereAnyDeal and/or gg.deals API key and your country (Settings › Prices), the library's Deals column shows each game's cheapest current store price. Hover it to see every store, the all-time low and the keyshop price; click it to open the deal.
+- **Prices.** With an IsThereAnyDeal and/or gg.deals API key and your country (Settings › Prices), the library's Deals column shows each game's cheapest current store price, marked **LOW** when it matches the all-time low. Hover it to see every store, the all-time low and the keyshop price; click it to open the deal.
 - **Security.** Copied keys are excluded from clipboard history and cleared after a delay. The app locks itself when idle and saves before locking.
-- **Themes.** Midnight (default), Amethyst, Forest, Opencode, Graphite, Light, System.
+- **Themes.** Midnight (default), Amethyst, Forest, Opencode, Graphite, Light, System. The window opens at the size you left it.
+
+| Game details on hover | Grid with artwork | Row menu |
+|---|---|---|
+| ![Hover card](docs/screenshots/hover-card.png) | ![Grid](docs/screenshots/grid.png) | ![Row menu](docs/screenshots/row-menu.png) |
 
 | Key editor | Cart & checkout | Trades & reputation |
 |---|---|---|
 | ![Key editor](docs/screenshots/detail.png) | ![Cart](docs/screenshots/cart.png) | ![Trades](docs/screenshots/trades.png) |
+
+Screenshots use demo data. Without artwork (offline, or fetching turned off) each game gets a coloured card with its initials.
 
 ## Install
 
@@ -49,7 +64,7 @@ Download the installer for your system from the [latest release](https://github.
 > - **Windows SmartScreen** says "Windows protected your PC". Click **More info**, then **Run anyway**.
 > - **macOS Gatekeeper** says the app can't be opened or is from an unidentified developer. Try to open it once, then go to **System Settings › Privacy & Security** and click **Open Anyway**. If macOS says the app "is damaged", run `xattr -dr com.apple.quarantine /Applications/KeyKeeper.app` in Terminal.
 
-Your vault is stored outside the app (`%APPDATA%\KeyKeeper\data` on Windows, `~/Library/Application Support/KeyKeeper` on macOS), and uninstalling does not delete it. You can pick another location on the lock screen.
+Your vault is stored outside the app (`%APPDATA%\KeyKeeper\data` on Windows, `~/Library/Application Support/KeyKeeper` on macOS), and uninstalling does not delete it. You can pick another location on the lock screen. The encrypted artwork cache sits next to the vault in `vault.kkvault.cache`; delete it whenever you like (or use Settings › Library › Clear).
 
 ## Updates
 
@@ -75,8 +90,13 @@ On macOS, use ⌘ wherever this list says Ctrl. Press **F1** (or **Ctrl+/**) in 
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | Ctrl+Shift+C | Copy the selected keys as "Name: Key" |
 | Delete | Delete the selected keys (asks first) |
+| ↑ / ↓ | Move through the library (or type a game's name to jump to it) |
+| Enter or F2 | Edit the selected key |
+| Ctrl+C | Copy the selected key |
+| Ctrl+B | Add the selected keys to the cart, or take them out |
+| Menu or Shift+F10 | Actions menu for the selected keys (or right-click a row) |
 | Ctrl+L | Lock the vault |
-| Esc | Close a dialog or the editor |
+| Esc | Close a dialog, menu or the editor |
 | F1 or Ctrl+/ | Show keyboard shortcuts |
 
 ## Building

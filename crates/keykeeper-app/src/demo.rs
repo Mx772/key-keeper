@@ -385,6 +385,11 @@ pub fn unlock(s: &mut AppState, data: VaultData) {
     ) {
         s.open_session(v, data);
     }
+    // Screenshots use the default theme, whatever the user's config says (the light scene
+    // picks Light before unlocking).
+    if s.theme != crate::theme::ThemeId::Light {
+        s.theme = crate::theme::ThemeId::Midnight;
+    }
     // Demo state never talks to GitHub or Steam.
     s.mark_offline();
     s.updates.source = std::sync::Arc::new(crate::update::NoUpdates);
