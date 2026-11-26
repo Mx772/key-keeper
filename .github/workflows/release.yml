@@ -1,0 +1,90 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds the installers and attaches them to a DRAFT GitHub Release.
+# Review the draft, then publish it by hand. Builds are unsigned (see README › Install).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGER_VERSION: 0.11.8
+
+jobs:
+  package:
+    name: package (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the version; add the target for that toolchain.
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager@${{ env.PACKAGER_VERSION }}
+      - name: Check the tag matches the crate version
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "keykeeper-app") | .version' | tr -d '\r')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match keykeeper-app version $version"
+            exit 1
+          fi
+      - run: cargo build --release --locked -p keykeeper-app --target ${{ matrix.target }}
+      - run: cargo packager --release --target ${{ matrix.target }}
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p upload
+          shopt -s nullglob
+          # NSIS names the installer after the binary (keykeeper_...); match the DMGs' KeyKeeper_...
+          for f in target/dist/*-setup.exe target/dist/*.dmg; do
+            cp "$f" "upload/$(basename "$f" | sed 's/^keykeeper_/KeyKeeper_/')"
+          done
+          ls -la upload
+          [ -n "$(ls upload)" ] || { echo "::error::no installers produced"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target }}
+          path: upload/*
+          if-no-files-found: error
+
+  draft-release:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: upload
+          pattern: installers-*
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la upload
+          (cd upload && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" upload/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "KeyKeeper $GITHUB_REF_NAME" \
+            --generate-notes

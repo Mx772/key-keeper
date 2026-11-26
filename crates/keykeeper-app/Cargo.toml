@@ -32,3 +32,21 @@ tempfile = "3.27.0"
 
 [build-dependencies]
 embed-resource = "3.0.12"
+
+# Installers: `cargo build --release -p keykeeper-app && cargo packager --release` (see README).
+# Windows builds an NSIS setup.exe; macOS builds KeyKeeper.app and a .dmg. Output: target/dist.
+[package.metadata.packager]
+product-name = "KeyKeeper"
+identifier = "io.github.mx772.keykeeper"
+publisher = "KeyKeeper"
+category = "Utility"
+homepage = "https://github.com/Mx772/key-keeper"
+license-file = "../../LICENSE"
+out-dir = "../../target/dist"
+icons = ["assets/icon.icns", "assets/icon-32.png", "assets/icon-128.png", "assets/icon-256.png", "assets/icon-512.png"]
+
+[package.metadata.packager.nsis]
+installer-icon = "assets/icon.ico"
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
