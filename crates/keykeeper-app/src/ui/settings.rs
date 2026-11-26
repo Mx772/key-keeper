@@ -100,6 +100,8 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
             st.date_format == DateFormat::DayMonthYear,
             |s| s.update_settings(|x| x.date_format = DateFormat::DayMonthYear),
         ));
+    let library = card(k, "settings-library", "Library", library_body(s, k));
+
     let data = card(
         k,
         "settings-data",
@@ -463,6 +465,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .gap(26.0)
                 .child(text("Settings").font(title_style()).color(k.c.text_strong))
                 .child(appearance)
+                .child(library)
                 .child(data)
                 .child(templates)
                 .child(steam)
@@ -471,6 +474,84 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .child(export)
                 .child(super::update::settings_card(s, k)),
         )
+}
+
+/// Hover card, store details and the artwork cache.
+fn library_body(s: &AppState, k: &Kit) -> El {
+    let c = &s.config;
+    let delay = c
+        .hover_delay_ms
+        .unwrap_or(crate::config::DEFAULT_HOVER_DELAY_MS);
+    let mut delays = hstack().key("hover-delays").gap(6.0);
+    for (label, ms) in [("Quick", 200u32), ("Normal", 450), ("Relaxed", 800)] {
+        delays = delays.child(chip(
+            k,
+            format!("hover-delay-{ms}"),
+            label,
+            delay == ms,
+            move |s| s.update_config(|c| c.hover_delay_ms = Some(ms)),
+        ));
+    }
+    let cache_size = s.info.cache().map_or(0, |c| c.size());
+    let cache_row = hstack()
+        .gap(12.0)
+        .child(muted(
+            k,
+            if cache_size == 0 {
+                "Nothing cached yet".to_string()
+            } else {
+                format!("{} cached", crate::info::human_bytes(cache_size))
+            },
+        ))
+        .child(
+            el().key("clear-art-cache").child(
+                Button::new("Clear")
+                    .variant(ButtonVariant::Neutral)
+                    .disabled(cache_size == 0)
+                    .on_press(|s: &mut AppState| s.clear_art_cache())
+                    .build(k),
+            ),
+        );
+    col()
+        .gap(14.0)
+        .child(option_row(
+            k,
+            "Game details on hover",
+            Checkbox::new(c.hover_cards())
+                .label("Show a game's details when the pointer rests on its name")
+                .on_toggle(|s: &mut AppState| {
+                    s.update_config(|c| c.hover_cards = Some(!c.hover_cards()))
+                })
+                .build(k)
+                .key("hover-cards"),
+        ))
+        .child(option_row(k, "Hover delay", delays))
+        .child(option_row(
+            k,
+            "Store details & artwork",
+            col()
+                .gap(6.0)
+                .grow(1.0)
+                .w(0.0)
+                .child(
+                    Checkbox::new(c.fetch_store_info())
+                        .label("Fetch descriptions, tags and artwork from Steam")
+                        .on_toggle(|s: &mut AppState| {
+                            s.update_config(|c| c.fetch_store_info = Some(!c.fetch_store_info()))
+                        })
+                        .build(k)
+                        .key("fetch-store-info"),
+                )
+                .child(
+                    muted(
+                        k,
+                        "Steam sees which games you look up, as it does when you refresh ratings. \
+                         Artwork is cached encrypted next to your vault.",
+                    )
+                    .wrap(),
+                ),
+        ))
+        .child(option_row(k, "Artwork cache", cache_row))
 }
 
 const STEAM_API_KEY_URL: &str = "https://steamcommunity.com/dev/apikey";

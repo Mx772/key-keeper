@@ -14,6 +14,7 @@ mod app;
 mod config;
 mod demo;
 mod form;
+mod info;
 mod price_actions;
 mod selftest;
 mod steam_actions;
@@ -65,6 +66,23 @@ const SCENES: &[Scene] = &[
         });
         if let Some(id) = id {
             s.open_key(id);
+        }
+    }),
+    ("hover-card", |s| {
+        demo::unlock(s, demo::sample_data());
+        let id = s.session().and_then(|x| {
+            x.rows.iter().copied().find(|id| {
+                x.repo
+                    .key(*id)
+                    .is_some_and(|k| k.steam_app_id == Some(1231880))
+            })
+        });
+        if let Some(id) = id {
+            s.hover = Some(app::Hover {
+                key: id,
+                since: 0.0,
+                open: true,
+            });
         }
     }),
     ("cart-button", |s| {

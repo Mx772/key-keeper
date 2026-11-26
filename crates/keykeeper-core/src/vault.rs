@@ -268,6 +268,11 @@ impl VaultKeys {
     pub fn verify_password(&self, password: &str) -> bool {
         unwrap(&self.header, password).is_ok_and(|dek| *dek == *self.dek)
     }
+
+    /// A cipher for cache files, derived from the data key (so it survives password changes).
+    pub fn blob_cipher(&self) -> crate::appinfo::BlobCipher {
+        crate::appinfo::BlobCipher::from_dek(&self.dek[..])
+    }
 }
 
 fn wrap(password: &str, params: KdfParams, dek: &[u8; DEK_LEN]) -> Result<Header, VaultError> {
@@ -393,6 +398,14 @@ impl Vault {
 
     pub fn params(&self) -> KdfParams {
         self.keys.params()
+    }
+
+    /// The encrypted artwork cache next to this vault (`<vault>.cache/`).
+    pub fn blob_cache(&self) -> crate::appinfo::BlobCache {
+        crate::appinfo::BlobCache::new(
+            crate::appinfo::BlobCache::dir_for(&self.path),
+            self.keys.blob_cipher(),
+        )
     }
 }
 

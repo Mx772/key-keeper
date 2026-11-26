@@ -95,6 +95,28 @@ impl Repo {
     }
 
     /// Prices for a key's game, if it has a Steam app id and they were fetched.
+    pub fn app_info(&self, app_id: u32) -> Option<&crate::appinfo::AppInfo> {
+        self.data.app_info.get(&app_id)
+    }
+
+    pub fn key_info(&self, k: &GameKey) -> Option<&crate::appinfo::AppInfo> {
+        k.steam_app_id.and_then(|a| self.app_info(a))
+    }
+
+    /// Merge fetched store details into the cache (not undoable, like prices).
+    pub fn set_app_info(&mut self, info: impl IntoIterator<Item = (u32, crate::appinfo::AppInfo)>) {
+        let mut changed = false;
+        for (app, i) in info {
+            if self.data.app_info.get(&app) != Some(&i) {
+                self.data.app_info.insert(app, i);
+                changed = true;
+            }
+        }
+        if changed {
+            self.generation += 1;
+        }
+    }
+
     pub fn key_prices(&self, k: &GameKey) -> Option<&crate::prices::GamePrices> {
         k.steam_app_id.and_then(|a| self.prices(a))
     }

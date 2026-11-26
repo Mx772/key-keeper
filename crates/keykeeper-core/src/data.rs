@@ -34,6 +34,9 @@ pub struct VaultData {
     /// Store prices by Steam app id (a cache; refetched on demand).
     #[serde(default)]
     pub prices: BTreeMap<u32, GamePrices>,
+    /// Store details by Steam app id (a cache, for the hover card and grid view).
+    #[serde(default)]
+    pub app_info: BTreeMap<u32, crate::appinfo::AppInfo>,
 }
 
 impl Default for VaultData {
@@ -47,6 +50,7 @@ impl Default for VaultData {
             templates: Templates::default(),
             last_app_version: None,
             prices: BTreeMap::new(),
+            app_info: BTreeMap::new(),
         }
     }
 }

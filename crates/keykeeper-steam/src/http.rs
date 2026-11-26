@@ -10,6 +10,10 @@ pub trait Http: Send + Sync {
     fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<String>;
     /// POST a JSON `body` to `url` with `query` parameters; returns the response body.
     fn post_json(&self, url: &str, query: &[(&str, &str)], body: &str) -> Result<String>;
+    /// GET raw bytes (images). Fails on non-2xx statuses and bodies over `limit` bytes.
+    fn get_bytes(&self, _url: &str, _limit: usize) -> Result<Vec<u8>> {
+        Err(SteamError::Unsupported("downloads"))
+    }
     /// GET without status handling or retries: the status and body, also for errors (APIs that
     /// explain a 4xx in its body). Only network failures are `Err`.
     fn get_with_status(&self, url: &str, query: &[(&str, &str)]) -> Result<(u16, String)> {
@@ -125,5 +129,23 @@ impl Http for UreqHttp {
 
     fn get_with_status(&self, url: &str, query: &[(&str, &str)]) -> Result<(u16, String)> {
         self.once(url, query, None)
+    }
+
+    /// Not throttled: CDN files, not API calls.
+    fn get_bytes(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let mut resp = self
+            .agent
+            .get(url)
+            .call()
+            .map_err(|e| SteamError::Network(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Err(SteamError::Status(status));
+        }
+        resp.body_mut()
+            .with_config()
+            .limit(limit as u64)
+            .read_to_vec()
+            .map_err(|e| SteamError::Network(e.to_string()))
     }
 }

@@ -1810,3 +1810,175 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     let first = s.repo.key(s.rows[0]).unwrap();
     assert!(s.repo.key_prices(first).is_some());
 }
+
+// ── game details: hover card, store details, artwork cache ───────────────────────────────────
+
+/// FakeSteam plus store details and one downloadable image.
+struct InfoSteam {
+    downloads: Arc<Mutex<Vec<String>>>,
+}
+
+impl SteamApi for InfoSteam {
+    fn search(&self, t: &str) -> Result<Vec<AppMatch>, SteamError> {
+        FakeSteam.search(t)
+    }
+    fn reviews(&self, a: &[u32]) -> Result<Vec<Review>, SteamError> {
+        FakeSteam.reviews(a)
+    }
+    fn resolve_profile(&self, i: &str) -> Result<u64, SteamError> {
+        FakeSteam.resolve_profile(i)
+    }
+    fn wishlist(&self, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.wishlist(id)
+    }
+    fn owned_games(&self, k: &str, id: u64) -> Result<Vec<u32>, SteamError> {
+        FakeSteam.owned_games(k, id)
+    }
+    fn store_details(
+        &self,
+        app_ids: &[u32],
+    ) -> Result<Vec<(keykeeper_steam::StoreDetails, Vec<String>)>, SteamError> {
+        Ok(app_ids
+            .iter()
+            .map(|&app_id| {
+                (
+                    keykeeper_steam::StoreDetails {
+                        app_id,
+                        name: format!("Store name {app_id}"),
+                        description: "A test game.".into(),
+                        developers: vec!["Test Dev".into()],
+                        tag_ids: vec![1],
+                        released: Some(1_651_154_399),
+                        deck_category: 3,
+                        header_url: Some(format!(
+                            "https://shared.akamai.steamstatic.com/{app_id}/header.jpg"
+                        )),
+                        capsule_url: None,
+                    },
+                    vec!["Metroidvania".to_string()],
+                )
+            })
+            .collect())
+    }
+    fn download_image(&self, url: &str) -> Result<Vec<u8>, SteamError> {
+        self.downloads.lock().unwrap().push(url.to_string());
+        Ok(include_bytes!("../assets/icon-32.png").to_vec())
+    }
+}
+
+fn info_rt(downloads: Arc<Mutex<Vec<String>>>) -> Runtime<AppState> {
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    let mut data = demo::sample_data();
+    data.app_info.clear();
+    demo::unlock(&mut s, data);
+    s.offline = false;
+    s.steam = Arc::new(InfoSteam { downloads });
+    runtime(s)
+}
+
+/// Poll until `done` holds (background threads).
+fn poll_until(rt: &mut Runtime<AppState>, now: f64, done: impl Fn(&AppState) -> bool) {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) {
+        poll(rt, now);
+        if done(&rt.state) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("background work never finished");
+}
+
+#[test]
+fn resting_on_a_name_opens_the_details_card_and_fetches_details_once() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    let (id, app) = {
+        let s = rt.state.session().unwrap();
+        let k = s
+            .rows
+            .iter()
+            .filter_map(|id| s.repo.key(*id))
+            .find(|k| k.steam_app_id == Some(1231880))
+            .unwrap();
+        (k.id, 1231880)
+    };
+    let (x, y) = rt.find(&format!("name-{id}")).expect("name cell");
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.hover.is_some_and(|h| h.key == id && !h.open));
+    assert!(rt.find("game-card").is_none(), "not before the delay");
+
+    poll_until(&mut rt, 30.0, |s| {
+        s.session().unwrap().repo.app_info(app).is_some()
+            && s.info.art(app).is_some_and(|i| i.is_ready())
+    });
+    assert!(rt.find("game-card").is_some(), "open after the delay");
+    let s = rt.state.session().unwrap();
+    let info = s.repo.app_info(app).unwrap();
+    assert_eq!(info.tags, vec!["Metroidvania".to_string()]);
+    assert_eq!(info.deck, keykeeper_core::DeckCompat::Verified);
+    assert!(
+        s.repo
+            .keys()
+            .iter()
+            .filter_map(|k| k.steam_app_id)
+            .all(|a| s.repo.app_info(a).is_some()),
+        "the whole library's details came in one batch"
+    );
+    assert_eq!(
+        downloads.lock().unwrap().as_slice(),
+        ["https://shared.akamai.steamstatic.com/1231880/header.jpg"]
+    );
+
+    // The artwork is cached encrypted next to the vault: a fresh session reads it from disk.
+    let cache = rt.state.info.cache().unwrap().clone();
+    let cached = cache.get(&format!("art-{app}")).expect("cached");
+    assert_eq!(cached, include_bytes!("../assets/icon-32.png"));
+    let names: Vec<String> = std::fs::read_dir(cache.dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.contains("1231880")), "{names:?}");
+    let raw = std::fs::read(cache.dir().join(&names[0])).unwrap();
+    assert!(!raw.windows(4).any(|w| w == b"\x89PNG"), "stored encrypted");
+
+    // Leaving the name closes the card.
+    rt.pointer_move(2.0, 2.0);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.state.hover.is_none());
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("game-card").is_none());
+
+    // Clearing the cache from Settings deletes it.
+    rt.update(|s, _| s.clear_art_cache());
+    assert_eq!(cache.size(), 0);
+}
+
+#[test]
+fn hover_cards_can_be_turned_off_and_fetching_can_be_refused() {
+    let downloads = Arc::new(Mutex::new(Vec::new()));
+    let mut rt = info_rt(downloads.clone());
+    rt.update(|s, _| {
+        s.config.hover_cards = Some(false);
+        s.config.fetch_store_info = Some(false);
+    });
+    let id = rt.state.session().unwrap().rows[0];
+    let (x, y) = rt.find(&format!("name-{id}")).unwrap();
+    rt.pointer_move(x, y);
+    poll(&mut rt, 30.0);
+    assert!(rt.state.hover.is_none());
+    assert!(rt.find("game-card").is_none());
+
+    rt.update(|s, _| s.config.hover_cards = Some(true));
+    rt.pointer_move(2.0, 2.0);
+    rt.frame(1.0 / 60.0);
+    rt.pointer_move(x, y);
+    rt.frame(1.0 / 60.0);
+    poll(&mut rt, 40.0);
+    std::thread::sleep(Duration::from_millis(50));
+    poll(&mut rt, 41.0);
+    assert!(rt.find("game-card").is_some(), "the card shows local data");
+    assert!(downloads.lock().unwrap().is_empty(), "nothing fetched");
+    assert!(rt.state.session().unwrap().repo.data().app_info.is_empty());
+}

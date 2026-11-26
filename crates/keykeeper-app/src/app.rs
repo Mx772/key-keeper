@@ -358,6 +358,21 @@ pub struct AppState {
     /// Keys were just added to the cart: the floating cart button springs up until this time.
     cart_bump_until: f64,
     pub(crate) cart_bump_pending: bool,
+    /// Store details and artwork (hover card, grid, editor header).
+    pub info: crate::info::GameInfo,
+    /// The game name the pointer is resting on, for the hover card.
+    pub hover: Option<Hover>,
+    /// Screenshot / test sessions never fetch from Steam.
+    pub offline: bool,
+}
+
+/// The pointer is resting on a game's name (or grid card).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hover {
+    pub key: Uuid,
+    /// When the pointer arrived (app clock).
+    pub since: f64,
+    pub open: bool,
 }
 
 pub fn today() -> Date {
@@ -388,6 +403,9 @@ impl AppState {
             updates: Updates::new(crate::update::real_source()),
             cart_bump_until: 0.0,
             cart_bump_pending: false,
+            info: crate::info::GameInfo::default(),
+            hover: None,
+            offline: false,
         }
     }
 
@@ -425,6 +443,15 @@ impl AppState {
 
     pub fn is_unlocked(&self) -> bool {
         matches!(self.screen, Screen::Unlocked(_))
+    }
+
+    /// Change a preference in `config.toml` and save it.
+    pub fn update_config(&mut self, f: impl FnOnce(&mut Config)) {
+        let before = self.config.clone();
+        f(&mut self.config);
+        if self.config != before {
+            self.save_config();
+        }
     }
 
     pub(crate) fn save_config(&mut self) {
@@ -602,7 +629,13 @@ impl AppState {
         true
     }
 
+    pub fn mark_offline(&mut self) {
+        self.offline = true;
+    }
+
     pub fn open_session(&mut self, vault: Vault, data: VaultData) {
+        self.info.attach(vault.blob_cache());
+        self.hover = None;
         let mut session = Session::new(vault, data);
         session.refresh_rows(today());
         self.screen = Screen::Unlocked(Box::new(session));
@@ -626,6 +659,8 @@ impl AppState {
         tx.clear_secret_clipboard();
         self.screen = Screen::Locked(Box::new(LockUi::for_path(path)));
         self.toasts.clear();
+        self.info.reset();
+        self.hover = None;
     }
 
     // ── per-frame upkeep ──
@@ -636,6 +671,8 @@ impl AppState {
         self.now = now;
         let mut changed = self.finish_unlock();
         changed |= self.finish_jobs();
+        changed |= self.finish_info();
+        changed |= self.poll_hover(now, tx);
         changed |= self.poll_updates(now, tx);
         if std::mem::take(&mut self.cart_bump_pending) {
             self.cart_bump_until = now + 0.3;
@@ -728,6 +765,7 @@ impl AppState {
     // ── navigation ──
 
     pub fn go(&mut self, page: Page) {
+        self.hover = None;
         if let Some(s) = self.session_mut() {
             s.sync_trade_form();
             s.page = page;
@@ -1229,6 +1267,7 @@ impl AppState {
     /// App-wide shortcuts. Text fields get keys first, so these only see unclaimed ones.
     pub fn on_key(&mut self, e: &KeyEvent, tx: &mut Tx) -> bool {
         self.touch(tx);
+        self.hover = None;
         if !self.is_unlocked() {
             return false;
         }

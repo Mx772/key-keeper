@@ -8,17 +8,21 @@
 //! - Wishlist: `IWishlistService/GetWishlist/v1` (no key; public wishlists only).
 //! - Owned games: `IPlayerService/GetOwnedGames/v1` (**needs a Web API key**, public profile).
 //!
+//! - Store details and artwork: `GetItems` again, plus `IStoreService/GetTagList` (no key).
+//!
 //! Store prices (IsThereAnyDeal, gg.deals) are in [`deals`].
 //!
 //! All network access goes through the [`Http`] trait so tests use recorded fixtures.
 
 pub mod api;
 pub mod deals;
+pub mod details;
 pub mod http;
 pub mod matching;
 
 pub use api::{AppMatch, ProfileRef, Review, Steam, SteamApi, parse_profile_input};
 pub use deals::{GgBatch, GgPrices, ItadPrices, Price, ShopDeal};
+pub use details::StoreDetails;
 pub use http::{Http, UreqHttp};
 pub use matching::{MatchOutcome, best_match, normalize_title};
 

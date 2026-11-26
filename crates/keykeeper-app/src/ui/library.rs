@@ -169,6 +169,17 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     } else {
         page = page.child(table(s, sess, k));
     }
+    if let Some(id) = s.hover_card_key()
+        && let Some(key) = sess.repo.key(id)
+    {
+        overlays.push(super::card::hover_card(
+            s,
+            sess,
+            key,
+            &format!("name-{id}"),
+            k,
+        ));
+    }
     page
 }
 
@@ -329,6 +340,28 @@ fn name_link(k: &Kit, key: &GameKey, url: String) -> El {
         )
 }
 
+/// The name cell: a Steam link when the game has an app id. Resting the pointer on it opens the
+/// details card (see `card::hover_card`).
+fn name_cell(k: &Kit, key: &GameKey) -> El {
+    let id = key.id;
+    let inner = match key.steam_url() {
+        Some(url) => name_link(k, key, url),
+        None => text(key.game_name.clone())
+            .font(k.ty.ui)
+            .color(k.c.text_strong)
+            .truncate()
+            .min_w(0.0),
+    };
+    row()
+        .key(format!("name-{id}"))
+        .min_w(0.0)
+        .center_y()
+        .on_hover_change(move |s: &mut AppState, inside, tx: &mut Tx| {
+            s.hover_key(id, inside, tx.clock());
+        })
+        .child(inner)
+}
+
 /// Best current price and its store; hover lists every store, press opens the best deal.
 fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
     let Some((best, shop)) = p.best() else {
@@ -453,10 +486,7 @@ fn table(state: &AppState, sess: &Session, k: &Kit) -> El {
             return Cell::text("");
         };
         match col {
-            "name" => match key.steam_url() {
-                Some(url) => Cell::el(name_link(&kc, key, url)),
-                None => Cell::text(&key.game_name),
-            },
+            "name" => Cell::el(name_cell(&kc, key)),
             "deals" => match s.session().and_then(|x| x.repo.key_prices(key)) {
                 Some(p) => Cell::el(deal_cell(&kc, key.id, p)),
                 None => Cell::text(""),
