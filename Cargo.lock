@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "base64 0.22.1",
  "cargo-packager-updater",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "blake2",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "keykeeper-steam"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "log",
  "serde",
