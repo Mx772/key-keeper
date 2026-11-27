@@ -208,6 +208,7 @@ fn generated_data_passes_the_check() {
     check(Path::new("fixture_data"), &fixture_data("0.0.0"));
     check(Path::new("fixture_data"), &fixture_data("0.3.0"));
     check(Path::new("fixture_data"), &fixture_data("0.3.1"));
+    check(Path::new("fixture_data"), &fixture_data("0.3.2"));
     check_0_3_1(Path::new("fixture_data"), &fixture_data("0.3.1"));
     check_0_3_1(Path::new("fixture_data"), &fixture_data("0.3.0"));
 }
