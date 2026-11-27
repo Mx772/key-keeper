@@ -12,7 +12,7 @@ use crate::app::{AppState, Session};
 use crate::config::{Density, LibraryLayout, LibraryView};
 
 /// Every library column but the game's name (which always shows): id and title.
-pub const COLUMNS: [(&str, &str); 10] = [
+pub const COLUMNS: [(&str, &str); 12] = [
     ("bundle", "Bundle"),
     ("source", "Source"),
     ("key", "Key"),
@@ -20,8 +20,10 @@ pub const COLUMNS: [(&str, &str); 10] = [
     ("platform", "Platform"),
     ("deadline", "Deadline"),
     ("rating", "Rating"),
+    ("steam_price", "Steam price"),
     ("deals", "Deals"),
-    ("steam", "Steam"),
+    ("keyshop", "Keyshops"),
+    ("steam", "Library"),
     ("added", "Added"),
 ];
 
@@ -61,6 +63,9 @@ pub fn sort_to_string(s: Sort) -> String {
         SortField::Source => "source",
         SortField::Rating => "rating",
         SortField::Price => "deals",
+        SortField::SteamPrice => "steam_price",
+        SortField::KeyshopPrice => "keyshop",
+        SortField::Ownership => "steam",
         _ => "added",
     };
     let dir = if s.dir == SortDir::Desc {
@@ -345,6 +350,9 @@ mod tests {
         for (f, col) in [
             (SortField::Name, "name"),
             (SortField::Price, "deals"),
+            (SortField::SteamPrice, "steam_price"),
+            (SortField::KeyshopPrice, "keyshop"),
+            (SortField::Ownership, "steam"),
             (SortField::Deadline, "deadline"),
             (SortField::Added, "added"),
         ] {

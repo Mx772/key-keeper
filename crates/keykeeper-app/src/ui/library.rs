@@ -681,6 +681,94 @@ fn deal_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
     e
 }
 
+/// A price that opens `url` when pressed, right-aligned like the other number columns.
+fn price_link(k: &Kit, key: String, label: String, url: Option<String>) -> El {
+    let mut e = row()
+        .key(key)
+        .w_full()
+        .min_w(0.0)
+        .h(22.0)
+        .px(4.0)
+        .gap(6.0)
+        .radius(5.0)
+        .center_y()
+        .child(spacer());
+    if let Some(url) = url {
+        e = e
+            .role("link")
+            .hover(k.c.bg_accent.alpha(0.16))
+            .cursor(rune::Cursor::Pointer)
+            .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+                let _ = tx.open_url(&url);
+            });
+    }
+    e.label(label)
+}
+
+/// Steam's own current price (from IsThereAnyDeal), with its discount when on sale.
+fn steam_price_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
+    let Some(st) = p.steam() else {
+        return text("—")
+            .font(k.ty.text_small)
+            .color(k.c.text_faint)
+            .help("IsThereAnyDeal has no current Steam price");
+    };
+    let mut label = format!("Steam price {}", st.price.format());
+    let mut help = vec![format!("Steam  {}", st.price.format())];
+    if st.cut > 0 {
+        label.push_str(&format!(", {}% off", st.cut));
+        if let Some(r) = &st.regular {
+            help.push(format!("Regular  {}", r.format()));
+        }
+    }
+    let mut e = price_link(k, format!("steam-price-{id}"), label, st.url.clone());
+    if st.cut > 0 {
+        e = e.child(
+            text(format!("−{}%", st.cut))
+                .font(k.ty.text_small)
+                .color(k.c.success.icon)
+                .a11y_hidden(),
+        );
+    }
+    e = e.child(
+        text(st.price.format())
+            .font(k.ty.mono)
+            .color(k.c.text_strong)
+            .a11y_hidden(),
+    );
+    let mut help = help.into_iter();
+    if let Some(first) = help.next() {
+        e = e.help(first);
+    }
+    for r in help {
+        e = e.help_row(r);
+    }
+    e
+}
+
+/// The cheapest grey-market keyshop price (from gg.deals); press opens the game on gg.deals.
+fn keyshop_cell(k: &Kit, id: Uuid, p: &keykeeper_core::GamePrices) -> El {
+    let Some(ks) = &p.keyshop_low else {
+        return text("—")
+            .font(k.ty.text_small)
+            .color(k.c.text_faint)
+            .help("No keyshop price (needs a gg.deals key in Settings › Prices)");
+    };
+    price_link(
+        k,
+        format!("keyshop-{id}"),
+        format!("Cheapest keyshop {}", ks.format()),
+        p.gg_deals_url.clone(),
+    )
+    .child(
+        text(ks.format())
+            .font(k.ty.mono)
+            .color(k.c.text_muted)
+            .a11y_hidden(),
+    )
+    .help("Cheapest keyshop (grey market), from gg.deals")
+}
+
 /// Near deadlines read as "in 12 days" / "3 days ago" (the date on hover); far ones as dates.
 fn deadline_cell(
     k: &Kit,
@@ -775,8 +863,20 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
             .align(Align::End)
             .sortable(),
     )
+    .column(
+        TableColumn::new("steam_price", "Steam price")
+            .width(100.0)
+            .align(Align::End)
+            .sortable(),
+    )
     .column(TableColumn::new("deals", "Deals").width(140.0).sortable())
-    .column(TableColumn::new("steam", "Steam").width(80.0))
+    .column(
+        TableColumn::new("keyshop", "Keyshops")
+            .width(90.0)
+            .align(Align::End)
+            .sortable(),
+    )
+    .column(TableColumn::new("steam", "Library").width(90.0).sortable())
     .column(
         TableColumn::new("added", "Added")
             .width(100.0)
@@ -804,6 +904,14 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
             "name" => Cell::el(name_cell(&kc, key)),
             "deals" => match s.session().and_then(|x| x.repo.key_prices(key)) {
                 Some(p) => Cell::el(deal_cell(&kc, key.id, p)),
+                None => Cell::text(""),
+            },
+            "steam_price" => match s.session().and_then(|x| x.repo.key_prices(key)) {
+                Some(p) => Cell::el(steam_price_cell(&kc, key.id, p)),
+                None => Cell::text(""),
+            },
+            "keyshop" => match s.session().and_then(|x| x.repo.key_prices(key)) {
+                Some(p) => Cell::el(keyshop_cell(&kc, key.id, p)),
                 None => Cell::text(""),
             },
             "bundle" => match key.bundle.as_deref() {
@@ -838,14 +946,21 @@ fn table(state: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> E
                 })
                 .muted(),
             },
+            // Steam ownership, filled in by Steam › Check library.
             "steam" => match key.steam.as_ref().map(|m| m.ownership) {
                 Some(keykeeper_core::Ownership::Owned) => {
-                    Cell::text("Owned").color(kc.c.success.icon)
+                    Cell::text("In library").color(kc.c.success.icon)
                 }
                 Some(keykeeper_core::Ownership::Wishlisted) => {
                     Cell::text("Wishlist").color(kc.c.text_accent)
                 }
                 Some(keykeeper_core::Ownership::NotOwned) => Cell::text(""),
+                _ if key.steam_app_id.is_some() => Cell::el(
+                    text("—")
+                        .font(kc.ty.text_small)
+                        .color(kc.c.text_faint)
+                        .help("Not checked yet: Steam › Check library"),
+                ),
                 _ => Cell::text(""),
             },
             "deadline" => deadline_cell(&kc, key, fmt, today),

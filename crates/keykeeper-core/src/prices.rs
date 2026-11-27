@@ -91,6 +91,20 @@ impl GamePrices {
         }
     }
 
+    /// Steam's own current offer, when IsThereAnyDeal lists it.
+    pub fn steam(&self) -> Option<&ShopPrice> {
+        self.shops
+            .iter()
+            .find(|s| s.shop.eq_ignore_ascii_case("steam"))
+    }
+
+    /// Current offers from official stores other than Steam, cheapest first.
+    pub fn other_shops(&self) -> impl Iterator<Item = &ShopPrice> {
+        self.shops
+            .iter()
+            .filter(|s| !s.shop.eq_ignore_ascii_case("steam"))
+    }
+
     /// Sort key for the library's Deals column: the best current price in cents.
     pub fn best_cents(&self) -> Option<u64> {
         self.best().map(|(m, _)| m.cents)
@@ -184,5 +198,10 @@ mod tests {
         ];
         p.sort_shops();
         assert_eq!(p.best(), Some((&Money::new(499, "USD"), Some("Fanatical"))));
+        assert_eq!(p.steam().map(|s| s.price.cents), Some(999));
+        assert_eq!(
+            p.other_shops().map(|s| s.shop.as_str()).collect::<Vec<_>>(),
+            ["Fanatical"]
+        );
     }
 }

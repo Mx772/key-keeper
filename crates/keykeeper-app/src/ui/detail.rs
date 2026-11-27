@@ -599,48 +599,74 @@ fn redeem_row(sess: &Session, key: &keykeeper_core::GameKey, k: &Kit) -> Option<
     )
 }
 
-/// The current store prices for this key's game, cheapest first; each row opens that deal.
+/// One store's offer as a row that opens the deal when pressed.
+fn shop_row(k: &Kit, key: String, shop: &keykeeper_core::ShopPrice, highlight: bool) -> El {
+    let mut r = row()
+        .key(key)
+        .w_full()
+        .h(28.0)
+        .px(10.0)
+        .gap(8.0)
+        .radius(k.radius.sm)
+        .center_y()
+        .fill(if highlight { k.c.success.bg } else { k.c.page })
+        .child(
+            text(shop.shop.clone())
+                .font(k.ty.ui)
+                .color(k.c.text_base)
+                .grow(1.0)
+                .truncate(),
+        );
+    if shop.cut > 0 {
+        r = r.child(muted(k, format!("−{}%", shop.cut)));
+    }
+    r = r.child(
+        text(shop.price.format())
+            .font(k.ty.mono)
+            .color(k.c.text_strong),
+    );
+    if let Some(url) = shop.url.clone() {
+        r = r
+            .role("link")
+            .hover(k.c.surface_hover)
+            .cursor(rune::Cursor::Pointer)
+            .help(format!("Open {} deal", shop.shop))
+            .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+                let _ = tx.open_url(&url);
+            });
+    }
+    r
+}
+
+/// A small caption above each group of prices.
+fn price_heading(k: &Kit, label: &str) -> El {
+    text(label.to_string())
+        .font(k.ty.text_xsmall_medium)
+        .color(k.c.text_muted)
+        .pt(4.0)
+}
+
+/// This key's game's prices in three groups: Steam itself, the other official stores (cheapest
+/// first; each row opens that deal), and the grey-market keyshops from gg.deals.
 fn prices_box(p: &keykeeper_core::GamePrices, k: &Kit) -> El {
     let mut list = col().key("form-prices").w_full().gap(2.0);
-    for (i, shop) in p.shops.iter().take(8).enumerate() {
-        let mut r = row()
-            .key(format!("price-{i}"))
-            .w_full()
-            .h(28.0)
-            .px(10.0)
-            .gap(8.0)
-            .radius(k.radius.sm)
-            .center_y()
-            .fill(if i == 0 { k.c.success.bg } else { k.c.page })
-            .child(
-                text(shop.shop.clone())
-                    .font(k.ty.ui)
-                    .color(k.c.text_base)
-                    .grow(1.0)
-                    .truncate(),
-            );
-        if shop.cut > 0 {
-            r = r.child(muted(k, format!("−{}%", shop.cut)));
-        }
-        r = r.child(
-            text(shop.price.format())
-                .font(k.ty.mono)
-                .color(k.c.text_strong),
-        );
-        if let Some(url) = shop.url.clone() {
-            r = r
-                .role("link")
-                .hover(k.c.surface_hover)
-                .cursor(rune::Cursor::Pointer)
-                .help(format!("Open {} deal", shop.shop))
-                .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
-                    let _ = tx.open_url(&url);
-                });
-        }
-        list = list.child(r);
+
+    list = list.child(price_heading(k, "Steam"));
+    list = match p.steam() {
+        Some(st) => list.child(shop_row(k, "price-steam".into(), st, false)),
+        None => list.child(muted(k, "No current Steam price")),
+    };
+
+    list = list.child(price_heading(k, "Other stores"));
+    let others: Vec<_> = p.other_shops().collect();
+    let best_other = others.first().map(|s| s.price.cents);
+    let cheaper_than_steam = |c: u64| p.steam().is_none_or(|st| c < st.price.cents);
+    for (i, shop) in others.iter().take(8).enumerate() {
+        let hl = i == 0 && best_other.is_some_and(cheaper_than_steam);
+        list = list.child(shop_row(k, format!("price-{i}"), shop, hl));
     }
-    if p.shops.len() > 8 {
-        list = list.child(muted(k, format!("…and {} more stores", p.shops.len() - 8)));
+    if others.len() > 8 {
+        list = list.child(muted(k, format!("…and {} more stores", others.len() - 8)));
     }
     let mut extra = Vec::new();
     if p.shops.is_empty()
@@ -651,15 +677,48 @@ fn prices_box(p: &keykeeper_core::GamePrices, k: &Kit) -> El {
     if let Some(l) = &p.history_low {
         extra.push(format!("All-time low {}", l.format()));
     }
-    if let Some(ks) = &p.keyshop_low {
-        extra.push(format!("Keyshops {}", ks.format()));
-    }
-    if p.shops.is_empty() && extra.is_empty() {
-        extra.push("No current prices found".into());
+    if others.is_empty() && extra.is_empty() {
+        extra.push("No other store prices found".into());
     }
     if !extra.is_empty() {
         list = list.child(muted(k, extra.join(" · ")).wrap());
     }
+
+    list = list.child(price_heading(k, "Keyshops (grey market)"));
+    list = match &p.keyshop_low {
+        Some(ks) => {
+            let mut r = row()
+                .key("price-keyshop")
+                .w_full()
+                .h(28.0)
+                .px(10.0)
+                .gap(8.0)
+                .radius(k.radius.sm)
+                .center_y()
+                .fill(k.c.page)
+                .child(
+                    text("Cheapest keyshop (gg.deals)")
+                        .font(k.ty.ui)
+                        .color(k.c.text_base)
+                        .grow(1.0)
+                        .truncate(),
+                )
+                .child(text(ks.format()).font(k.ty.mono).color(k.c.text_strong));
+            if let Some(url) = p.gg_deals_url.clone() {
+                r = r
+                    .role("link")
+                    .hover(k.c.surface_hover)
+                    .cursor(rune::Cursor::Pointer)
+                    .help("Open on gg.deals")
+                    .on_press_tx(move |_: &mut AppState, tx: &mut Tx| {
+                        let _ = tx.open_url(&url);
+                    });
+            }
+            list.child(r)
+        }
+        None => list.child(muted(k, "No keyshop price (needs a gg.deals key)")),
+    };
+
     field(k, &format!("Prices ({})", p.country), list, None)
 }
 

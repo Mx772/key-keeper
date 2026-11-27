@@ -244,6 +244,20 @@ pub fn hover_card(s: &AppState, sess: &Session, key: &GameKey, anchor: &str, k: 
         }
         facts = facts.child(fact(k, "Best price", value(k, v, k.c.text_base)));
     }
+    if let Some(st) = sess.repo.key_prices(key).and_then(|p| p.steam()) {
+        let mut v = st.price.format();
+        if st.cut > 0 {
+            v.push_str(&format!(" (−{}%)", st.cut));
+        }
+        facts = facts.child(fact(k, "Steam price", value(k, v, k.c.text_base)));
+    }
+    if let Some(ks) = sess
+        .repo
+        .key_prices(key)
+        .and_then(|p| p.keyshop_low.as_ref())
+    {
+        facts = facts.child(fact(k, "Keyshops", value(k, ks.format(), k.c.text_muted)));
+    }
     if let Some(d) = key.redemption_deadline
         && !key.status.is_gone()
     {
