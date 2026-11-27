@@ -1560,6 +1560,9 @@ pub fn sort_for(column: &str, dir: rune_kit::SortDir) -> Sort {
         "source" => SortField::Source,
         "rating" => SortField::Rating,
         "deals" => SortField::Price,
+        "steam_price" => SortField::SteamPrice,
+        "keyshop" => SortField::KeyshopPrice,
+        "steam" => SortField::Ownership,
         _ => SortField::Added,
     };
     let dir = if matches!(dir, rune_kit::SortDir::Descending) {

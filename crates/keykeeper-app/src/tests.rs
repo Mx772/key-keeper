@@ -1784,7 +1784,8 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     let mut s = state_for(&dir.join("unused.kkvault"));
     s.steam = std::sync::Arc::new(PricedSteam);
     demo::unlock(&mut s, demo::sample_data());
-    let mut rt = runtime(s);
+    // Wide enough that every price column is on screen without scrolling the table.
+    let mut rt = runtime_sized(s, (2000.0, SIZE.1));
 
     // No keys yet: explain where to add one.
     rt.update(|s, _| s.refresh_prices(true));
@@ -1822,6 +1823,7 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     let p = s.repo.key_prices(&key).unwrap();
     assert_eq!(p.best().unwrap().1, Some("Fanatical"), "cheapest first");
     assert_eq!(p.best_cents(), Some(899));
+    assert_eq!(p.steam().map(|s| s.price.cents), Some(1999));
     assert!(
         matches!(
             &s.steam_ui.prices_status,
@@ -1834,6 +1836,8 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     rt.take_url_requests();
     click(&mut rt, &format!("deal-{}", key.id));
     assert_eq!(rt.take_url_requests(), ["https://itad.example/fanatical"]);
+    click(&mut rt, &format!("steam-price-{}", key.id));
+    assert_eq!(rt.take_url_requests(), ["https://itad.example/steam"]);
 
     rt.update(|s, _| s.open_key(key.id));
     rt.frame(1.0 / 60.0);

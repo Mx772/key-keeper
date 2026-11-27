@@ -25,6 +25,12 @@ pub enum SortField {
     Rating,
     /// Cheapest current store price.
     Price,
+    /// Steam's own current price.
+    SteamPrice,
+    /// Cheapest grey-market keyshop price (gg.deals).
+    KeyshopPrice,
+    /// Steam ownership: in library, then wishlisted, then not owned; unchecked last.
+    Ownership,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -305,6 +311,32 @@ fn compare(repo: &Repo, a: &GameKey, b: &GameKey, sort: Sort) -> Ordering {
             let p = |k: &GameKey| repo.key_prices(k).and_then(|p| p.best_cents());
             opt(p(a), p(b), sort.dir, |x, y| x.cmp(&y))
         }
+        SortField::SteamPrice => {
+            let p = |k: &GameKey| {
+                repo.key_prices(k)
+                    .and_then(|p| p.steam())
+                    .map(|s| s.price.cents)
+            };
+            opt(p(a), p(b), sort.dir, |x, y| x.cmp(&y))
+        }
+        SortField::KeyshopPrice => {
+            let p = |k: &GameKey| {
+                repo.key_prices(k)
+                    .and_then(|p| p.keyshop_low.as_ref())
+                    .map(|m| m.cents)
+            };
+            opt(p(a), p(b), sort.dir, |x, y| x.cmp(&y))
+        }
+        SortField::Ownership => {
+            use crate::model::Ownership as O;
+            let r = |k: &GameKey| match k.steam.as_ref().map(|m| m.ownership) {
+                Some(O::Owned) => Some(0u8),
+                Some(O::Wishlisted) => Some(1),
+                Some(O::NotOwned) => Some(2),
+                _ => None,
+            };
+            opt(r(a), r(b), sort.dir, |x, y| x.cmp(&y))
+        }
     }
 }
 
@@ -558,6 +590,51 @@ mod tests {
             ..Query::default()
         };
         assert_eq!(names(&r, &rating)[0], "Haiku, the Robot");
+    }
+
+    #[test]
+    fn ownership_sorts_library_then_wishlist_then_unchecked() {
+        let mut r = repo();
+        let with = |name: &str, key: &str, o: crate::model::Ownership| {
+            let mut k = GameKey::new(name, key);
+            k.steam = Some(SteamMeta {
+                rating: None,
+                ownership: o,
+                fetched_at: jiff::Timestamp::now(),
+            });
+            k
+        };
+        r.add_keys(
+            vec![
+                with(
+                    "Not owned",
+                    "NOTOW-NED00-00001",
+                    crate::model::Ownership::NotOwned,
+                ),
+                with(
+                    "Wished",
+                    "WISHE-D0000-00001",
+                    crate::model::Ownership::Wishlisted,
+                ),
+                with("Owned", "OWNED-00000-00001", crate::model::Ownership::Owned),
+            ],
+            "more",
+        );
+        let q = |dir| Query {
+            sort: Sort {
+                field: SortField::Ownership,
+                dir,
+            },
+            ..Query::default()
+        };
+        assert_eq!(
+            &names(&r, &q(SortDir::Asc))[..3],
+            ["Owned", "Wished", "Not owned"]
+        );
+        assert_eq!(
+            &names(&r, &q(SortDir::Desc))[..3],
+            ["Not owned", "Wished", "Owned"]
+        );
     }
 
     #[test]
