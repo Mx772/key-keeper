@@ -376,6 +376,47 @@ pub enum DateFormat {
     DayMonthYear,
 }
 
+/// Which keys "Refresh prices" looks up. A game is fetched when any of its keys is in scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriceScope {
+    /// Keys still in hand: everything but traded, redeemed and gifted.
+    #[default]
+    InHand,
+    /// Everything but redeemed keys.
+    Unredeemed,
+    /// Every key.
+    All,
+}
+
+impl PriceScope {
+    pub const ALL: [PriceScope; 3] = [PriceScope::InHand, PriceScope::Unredeemed, PriceScope::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PriceScope::InHand => "Keys I still have",
+            PriceScope::Unredeemed => "All but redeemed",
+            PriceScope::All => "Every key",
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            PriceScope::InHand => "in-hand",
+            PriceScope::Unredeemed => "unredeemed",
+            PriceScope::All => "all",
+        }
+    }
+
+    pub fn includes(self, status: KeyStatus) -> bool {
+        match self {
+            PriceScope::InHand => !status.is_gone(),
+            PriceScope::Unredeemed => status != KeyStatus::Redeemed,
+            PriceScope::All => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -391,6 +432,8 @@ pub struct Settings {
     pub steam_id: Option<String>,
     /// Two-letter country for store prices (IsThereAnyDeal / gg.deals), e.g. "US".
     pub price_country: String,
+    /// Which keys "Refresh prices" fetches prices for.
+    pub price_scope: PriceScope,
 }
 
 impl Default for Settings {
@@ -403,6 +446,7 @@ impl Default for Settings {
             backups_to_keep: 5,
             steam_id: None,
             price_country: "US".to_string(),
+            price_scope: PriceScope::InHand,
         }
     }
 }
@@ -451,6 +495,37 @@ mod tests {
                 && KeyStatus::Gifted.is_gone()
         );
         assert!(!KeyStatus::Unknown.is_gone());
+    }
+
+    #[test]
+    fn price_scope_rules_and_names() {
+        use KeyStatus::*;
+        let inc = |sc: PriceScope| {
+            KeyStatus::ALL
+                .iter()
+                .filter(|s| sc.includes(**s))
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inc(PriceScope::InHand), [Available, Reserved, Unknown]);
+        assert_eq!(
+            inc(PriceScope::Unredeemed),
+            [Available, Reserved, Traded, Gifted, Unknown]
+        );
+        assert_eq!(inc(PriceScope::All), KeyStatus::ALL);
+        let names: Vec<String> = PriceScope::ALL
+            .iter()
+            .map(|s| serde_json::to_string(s).unwrap())
+            .collect();
+        assert_eq!(names, ["\"in_hand\"", "\"unredeemed\"", "\"all\""]);
+        // Vaults written before the setting existed get the default.
+        let old: Settings = serde_json::from_str(r#"{"price_country":"GB"}"#).unwrap();
+        assert_eq!(old.price_scope, PriceScope::InHand);
+        assert!(
+            PriceScope::ALL
+                .iter()
+                .all(|s| !s.label().is_empty() && !s.slug().is_empty())
+        );
     }
 
     #[test]

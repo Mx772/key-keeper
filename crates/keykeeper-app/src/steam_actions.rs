@@ -356,6 +356,15 @@ impl AppState {
                 }
             }
         }
+        let rest: Vec<ReviewRow> = review
+            .rows
+            .into_iter()
+            .filter(|r| r.chosen.is_none())
+            .collect();
+        s.closed_review = (!rest.is_empty()).then_some(MatchReview {
+            rows: rest,
+            open: None,
+        });
         let n = keys.len();
         if n == 0 {
             return;
@@ -369,9 +378,46 @@ impl AppState {
 
     pub fn close_review(&mut self) {
         self.match_combo.close();
-        if let Some(s) = self.session_mut() {
-            s.match_review = None;
+        let Some(s) = self.session_mut() else { return };
+        let Some(mut review) = s.match_review.take() else {
+            return;
+        };
+        review.open = None;
+        s.closed_review = Some(review);
+        self.toast("Closed — reopen it from Steam › Review unmatched");
+    }
+
+    /// Reopen the match review: the last one closed (minus keys matched since), or, when there
+    /// is none, a fresh Match on Steam for every key searched before without an exact match.
+    pub fn reopen_review(&mut self) {
+        let Some(s) = self.session_mut() else { return };
+        if s.match_review.is_some() {
+            return;
         }
+        if let Some(mut review) = s.closed_review.take() {
+            let repo = &s.repo;
+            for r in &mut review.rows {
+                r.key_ids
+                    .retain(|id| repo.key(*id).is_some_and(|k| k.steam_app_id.is_none()));
+            }
+            review.rows.retain(|r| !r.key_ids.is_empty());
+            if !review.rows.is_empty() {
+                s.match_review = Some(review);
+                return;
+            }
+        }
+        let ids: Vec<Uuid> = s
+            .repo
+            .keys()
+            .iter()
+            .filter(|k| k.steam_app_id.is_none() && k.steam_searched_at.is_some())
+            .map(|k| k.id)
+            .collect();
+        if ids.is_empty() {
+            self.toast("Nothing to review — every searched key has a Steam app id");
+            return;
+        }
+        self.match_missing(&ids);
     }
 
     /// Fetch review scores for keys with an app id; `force` ignores the 7-day cache.
@@ -586,6 +632,7 @@ impl AppState {
                     msg.push_str(&format!(", {skipped} skipped (searched recently)"));
                 }
                 if !rows.is_empty() {
+                    s.closed_review = None;
                     s.match_review = Some(MatchReview { rows, open: None });
                 }
                 match error {

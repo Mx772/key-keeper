@@ -1,6 +1,6 @@
 //! Settings: appearance, dates, security, password, export, updates.
 
-use keykeeper_core::DateFormat;
+use keykeeper_core::{DateFormat, PriceScope};
 use rune::{El, Link, LinkPaint, ScrollSpec, Span, Tx, col, el, rich, row, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, Kit, TextInput};
 
@@ -12,15 +12,14 @@ use keykeeper_core::template::{self, TemplateError};
 use rune_kit::TextArea;
 
 fn option_row(k: &Kit, label: &str, control: El) -> El {
-    row()
+    // Label above the control: the two-column layout leaves too little width side by side.
+    col()
         .w_full()
-        .gap(16.0)
-        .center_y()
+        .gap(8.0)
         .child(
             text(label.to_string())
-                .font(k.ty.ui)
-                .color(k.c.text_base)
-                .w(220.0),
+                .font(k.ty.ui_medium)
+                .color(k.c.text_base),
         )
         .child(control)
 }
@@ -33,7 +32,7 @@ fn number_chips(
     fmt: fn(u32) -> String,
     set: fn(&mut keykeeper_core::Settings, u32),
 ) -> El {
-    let mut r = hstack().gap(6.0);
+    let mut r = hstack().gap(6.0).flex_wrap();
     for &v in values {
         r = r.child(chip(
             k,
@@ -49,7 +48,7 @@ fn number_chips(
 pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> El {
     let st = sess.settings();
 
-    let mut themes = hstack().key("themes").gap(6.0).flex_wrap().grow(1.0).w(0.0);
+    let mut themes = hstack().key("themes").gap(6.0).flex_wrap().w_full();
     for t in ThemeId::ALL {
         let on = s.theme == t;
         themes = themes.child(
@@ -86,6 +85,7 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
 
     let date_chips = hstack()
         .gap(6.0)
+        .flex_wrap()
         .child(chip(
             k,
             "date-mdy",
@@ -383,6 +383,19 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
                 .key("prices-country"),
             None,
         ))
+        .child(field(k, "Fetch prices for (a game is fetched if any of its keys counts)", {
+            let mut r = hstack().key("price-scope").gap(6.0).flex_wrap();
+            for sc in PriceScope::ALL {
+                r = r.child(chip(
+                    k,
+                    format!("price-scope-{}", sc.slug()),
+                    sc.label(),
+                    st.price_scope == sc,
+                    move |s| s.update_settings(|x| x.price_scope = sc),
+                ));
+            }
+            r
+        }, None))
         .child(field(
             k,
             "IsThereAnyDeal API key (every store's price and the all-time low)",
@@ -466,24 +479,52 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, _overlays: &mut Vec<El>) -> E
         .child(
             col()
                 .w_full()
-                .max_w(860.0)
+                .max_w(1480.0)
                 .px(32.0)
                 .pt(28.0)
                 .pb(40.0)
                 .gap(26.0)
                 .child(text("Settings").font(title_style()).color(k.c.text_strong))
-                .child(appearance)
-                .child(library)
-                .child(data)
-                .child(templates)
-                .child(steam)
-                .child(prices)
-                .child(security)
-                .child(export)
-                .child(super::update::settings_card(s, k))
-                .child(diagnostics(s, k)),
+                .child(
+                    // Two columns side by side when there's room, one under the other when not.
+                    row()
+                        .key("settings-columns")
+                        .w_full()
+                        .flex_wrap()
+                        .items_start()
+                        .gap(26.0)
+                        .child(
+                            settings_column("settings-general")
+                                .child(appearance)
+                                .child(library)
+                                .child(data)
+                                .child(security)
+                                .child(export)
+                                .child(super::update::settings_card(s, k)),
+                        )
+                        .child(
+                            settings_column("settings-services")
+                                .child(steam)
+                                .child(prices)
+                                .child(templates)
+                                .child(diagnostics(s, k)),
+                        ),
+                ),
         )
 }
+
+/// One of the two Settings columns: shares the width, at least [`SETTINGS_COLUMN_MIN`] wide.
+fn settings_column(key: &str) -> El {
+    col()
+        .key(key.to_string())
+        .grow(1.0)
+        .w(SETTINGS_COLUMN_MIN)
+        .min_w(SETTINGS_COLUMN_MIN)
+        .gap(26.0)
+}
+
+/// Narrower than this, the columns stack.
+const SETTINGS_COLUMN_MIN: f32 = 460.0;
 
 /// The activity log: recent lines, export, and the folder it lives in.
 fn diagnostics(s: &AppState, k: &Kit) -> El {
@@ -605,8 +646,7 @@ fn library_body(s: &AppState, k: &Kit) -> El {
             "Store details & artwork",
             col()
                 .gap(6.0)
-                .grow(1.0)
-                .w(0.0)
+                .w_full()
                 .child(
                     Checkbox::new(c.fetch_store_info())
                         .label("Fetch descriptions, tags and artwork from Steam")

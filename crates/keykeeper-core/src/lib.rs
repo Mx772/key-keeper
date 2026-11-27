@@ -21,8 +21,8 @@ pub use appinfo::{AppInfo, BlobCache, BlobCipher, DeckCompat};
 pub use data::VaultData;
 pub use error::{RepoError, VaultError};
 pub use model::{
-    ApiKeys, DateFormat, GameKey, KeyStatus, LinkOverrides, Ownership, Platform, ReceivedItem,
-    Settings, SteamMeta, SteamRating, Trade, TradeSite, TradeStatus,
+    ApiKeys, DateFormat, GameKey, KeyStatus, LinkOverrides, Ownership, Platform, PriceScope,
+    ReceivedItem, Settings, SteamMeta, SteamRating, Trade, TradeSite, TradeStatus,
 };
 pub use prices::{GamePrices, Money, ShopPrice};
 pub use query::{
