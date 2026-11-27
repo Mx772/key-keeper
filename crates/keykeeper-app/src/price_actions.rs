@@ -3,7 +3,7 @@
 
 use jiff::{SignedDuration, Timestamp};
 use keykeeper_core::prices::{gg_deals_region, normalize_country};
-use keykeeper_core::{GamePrices, Money, Secret, ShopPrice};
+use keykeeper_core::{GamePrices, Money, PriceScope, Secret, ShopPrice};
 use keykeeper_steam::{GgBatch, ItadBatch, Price, Progress, SteamError};
 use uuid::Uuid;
 
@@ -107,7 +107,8 @@ impl AppState {
         self.refresh_prices_for(&[], force);
     }
 
-    /// Fetch prices for the keys in `ids` (every key when empty). `force` ignores the cache.
+    /// Fetch prices for the keys in `ids` (every key when empty) that are in the settings'
+    /// [`PriceScope`]. `force` ignores the cache.
     pub fn refresh_prices_for(&mut self, ids: &[Uuid], force: bool) {
         if let Some(err) = self.save_price_settings() {
             if let Some(s) = self.session_mut() {
@@ -129,12 +130,14 @@ impl AppState {
             return;
         }
         let country = s.settings().price_country.clone();
+        let scope = s.settings().price_scope;
         let stale = Timestamp::now() - SignedDuration::from_hours(PRICE_MAX_AGE_HOURS);
         let mut apps: Vec<u32> = s
             .repo
             .keys()
             .iter()
             .filter(|k| ids.is_empty() || ids.contains(&k.id))
+            .filter(|k| scope.includes(k.status))
             .filter_map(|k| k.steam_app_id)
             .filter(|a| {
                 force
@@ -147,7 +150,14 @@ impl AppState {
         apps.dedup();
         if apps.is_empty() {
             if force {
-                self.toast("No keys have a Steam app id yet — use Match on Steam first");
+                self.toast(format!(
+                    "No {} have a Steam app id yet — use Match on Steam first",
+                    match scope {
+                        PriceScope::All => "keys",
+                        PriceScope::InHand => "keys you still have",
+                        PriceScope::Unredeemed => "unredeemed keys",
+                    }
+                ));
             } else {
                 self.toast("Prices are up to date");
             }

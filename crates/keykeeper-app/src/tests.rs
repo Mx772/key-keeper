@@ -29,7 +29,7 @@ fn runtime(s: AppState) -> Runtime<AppState> {
 }
 
 /// Settings is a long scrolling page; tall tests keep every control on screen.
-const TALL: (f32, f32) = (1280.0, 3000.0);
+const TALL: (f32, f32) = (1280.0, 3400.0);
 
 fn runtime_sized(s: AppState, size: (f32, f32)) -> Runtime<AppState> {
     let mut rt = Runtime::new(s, ui::view, size, Env::new(true, 1.0));
@@ -1019,6 +1019,98 @@ fn bulk_match_then_filter_unmatched() {
 }
 
 #[test]
+fn closed_match_review_reopens_from_the_steam_menu() {
+    let mut rt = steam_rt(&["Doom", "Unknown Indie"]);
+    rt.update(|s, _| s.match_missing(&[]));
+    wait_for_steam(&mut rt);
+    rt.frame(1.0 / 60.0);
+    // A stray click closes it...
+    click(&mut rt, "review-close");
+    let sess = rt.state.session().unwrap();
+    assert!(sess.match_review.is_none());
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.contains("Review unmatched"))
+    );
+    // ...and Steam › Review unmatched brings it back, Steam's candidates and all.
+    click(&mut rt, "steam-menu-button");
+    for _ in 0..20 {
+        rt.frame(1.0 / 60.0);
+    }
+    click(&mut rt, "steam-review");
+    assert!(rt.state.job.is_none(), "reopened without searching again");
+    let review = rt.state.session().unwrap().match_review.as_ref().unwrap();
+    assert_eq!(review.rows.len(), 2);
+    let doom = review.rows.iter().position(|r| r.name == "Doom").unwrap();
+    assert_eq!(review.rows[doom].matches.len(), 2);
+
+    // Applying one pick keeps the rest for later.
+    rt.update(|s, _| s.review_choose(doom, "2280"));
+    rt.update(|s, _| s.apply_review());
+    wait_for_steam(&mut rt);
+    rt.update(|s, _| s.reopen_review());
+    let review = rt.state.session().unwrap().match_review.as_ref().unwrap();
+    assert_eq!(review.rows.len(), 1);
+    assert_eq!(review.rows[0].name, "Unknown Indie");
+
+    // With nothing kept (after a relock, say), it searches the unmatched keys again.
+    rt.update(|s, _| {
+        s.close_review();
+        s.session_mut().unwrap().closed_review = None;
+        s.reopen_review();
+    });
+    assert!(rt.state.job.is_some(), "searches again");
+    wait_for_steam(&mut rt);
+    let review = rt.state.session().unwrap().match_review.as_ref().unwrap();
+    assert_eq!(review.rows.len(), 1);
+    assert_eq!(review.rows[0].name, "Unknown Indie");
+
+    // Everything matched: nothing to review.
+    rt.update(|s, _| {
+        s.close_review();
+        let x = s.session_mut().unwrap();
+        x.closed_review = None;
+        let id = x
+            .repo
+            .keys()
+            .iter()
+            .find(|k| k.game_name == "Unknown Indie")
+            .unwrap()
+            .id;
+        x.repo.update_key(id, |k| k.steam_app_id = Some(1)).unwrap();
+        s.reopen_review();
+    });
+    assert!(rt.state.job.is_none());
+    assert!(rt.state.session().unwrap().match_review.is_none());
+    assert!(
+        rt.state
+            .toasts
+            .iter()
+            .any(|t| t.title.starts_with("Nothing to review"))
+    );
+}
+
+#[test]
+fn long_library_shows_back_to_top() {
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    demo::unlock(&mut s, demo::sample_data());
+    let mut rt = runtime(s);
+    rt.frame(1.0 / 60.0);
+    assert!(rt.find("scroll-top").is_some());
+    click(&mut rt, "scroll-top");
+    // A short list doesn't need it.
+    rt.update(|s, _| {
+        let x = s.session_mut().unwrap();
+        x.search.replace_text("hades");
+        x.filters_changed();
+    });
+    poll(&mut rt, 0.0);
+    assert!(rt.find("scroll-top").is_none());
+}
+
+#[test]
 fn network_errors_are_reported() {
     let mut rt = steam_rt(&["Offline"]);
     rt.update(|s, _| s.match_missing(&[]));
@@ -1849,6 +1941,63 @@ fn prices_fetch_fill_the_deals_column_and_editor() {
     let s = rt.state.session().unwrap();
     let first = s.repo.key(s.rows[0]).unwrap();
     assert!(s.repo.key_prices(first).is_some());
+}
+
+#[test]
+fn price_fetch_follows_the_price_scope_setting() {
+    use keykeeper_core::{KeyStatus, PriceScope};
+    let mut s = state_for(&std::env::temp_dir().join("unused.kkvault"));
+    s.steam = std::sync::Arc::new(PricedSteam);
+    let mut data = VaultData::default();
+    for (i, (name, app, status)) in [
+        ("Kept", 10, KeyStatus::Available),
+        ("Redeemed", 20, KeyStatus::Redeemed),
+        ("Traded", 30, KeyStatus::Traded),
+        // A redeemed copy of a game I still have a key for: the game is still fetched.
+        ("Kept again", 10, KeyStatus::Redeemed),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut k = keykeeper_core::GameKey::new(name, format!("AAAAA-BBBBB-{i:05}"));
+        k.steam_app_id = Some(app);
+        k.status = status;
+        data.keys.push(k);
+    }
+    data.settings.price_country = "GB".into();
+    demo::unlock(&mut s, data);
+    let mut rt = runtime_sized(s, TALL);
+    rt.update(|s, _| {
+        s.session_mut().unwrap().steam_ui.itad_key = TextEdit::new("itad-key");
+    });
+    let priced = |rt: &Runtime<AppState>| {
+        let r = &rt.state.session().unwrap().repo;
+        [10, 20, 30].map(|a| r.prices(a).is_some())
+    };
+    assert_eq!(
+        rt.state.session().unwrap().settings().price_scope,
+        PriceScope::InHand
+    );
+    rt.update(|s, _| s.refresh_prices(true));
+    wait_for_steam(&mut rt);
+    assert_eq!(priced(&rt), [true, false, false], "only keys in hand");
+
+    // The setting is chips in Settings › Prices.
+    rt.update(|s, _| s.go(Page::Settings));
+    rt.frame(1.0 / 60.0);
+    click(&mut rt, "price-scope-unredeemed");
+    assert_eq!(
+        rt.state.session().unwrap().settings().price_scope,
+        PriceScope::Unredeemed
+    );
+    rt.update(|s, _| s.refresh_prices(true));
+    wait_for_steam(&mut rt);
+    assert_eq!(priced(&rt), [true, false, true], "traded too, not redeemed");
+
+    rt.update(|s, _| s.update_settings(|x| x.price_scope = PriceScope::All));
+    rt.update(|s, _| s.refresh_prices(true));
+    wait_for_steam(&mut rt);
+    assert_eq!(priced(&rt), [true, true, true]);
 }
 
 // ── game details: hover card, store details, artwork cache ───────────────────────────────────

@@ -210,6 +210,8 @@ pub struct Session {
     pub candidates: Option<Candidates>,
     /// "Match on Steam" results without an exact match, for the user to pick from.
     pub match_review: Option<crate::steam_actions::MatchReview>,
+    /// The last match review, kept after it closes so Steam › Review unmatched can reopen it.
+    pub closed_review: Option<crate::steam_actions::MatchReview>,
     pub steam_ui: SteamUi,
     pub missing_app_id: bool,
     /// Filters: spares of games I own on Steam, and games with several keys.
@@ -277,6 +279,7 @@ impl Session {
             templates_ui: TemplatesUi::from(&templates),
             candidates: None,
             match_review: None,
+            closed_review: None,
             steam_ui,
             missing_app_id: false,
             trade_fodder: false,

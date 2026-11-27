@@ -192,12 +192,31 @@ pub fn view(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El
     } else if shown == 0 {
         page = page.child(no_matches(k));
     } else {
-        let area = if s.config.library.view == LibraryView::Grid {
+        let grid = s.config.library.view == LibraryView::Grid;
+        let area = if grid {
             super::row_menu::wrap(sess, super::grid::view(s, sess, k), k, overlays)
         } else {
             table(s, sess, k, overlays)
         };
-        page = page.child(area.w_full().min_w(0.0).grow(1.0).min_h(0.0));
+        let area = col()
+            .w_full()
+            .min_w(0.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(area.w_full().min_w(0.0).grow(1.0).min_h(0.0));
+        // Long enough to scroll (roughly): offer a way back to the first row.
+        let long = sess.display.len() > if grid { 8 } else { 14 };
+        page = page.child(if long {
+            // Clear of the cart bauble, which floats over the same corner.
+            let right = if sess.repo.cart_len() > 0 { 82.0 } else { 18.0 };
+            area.child(to_top(
+                k,
+                if grid { "library-grid-scroll" } else { "rows" },
+                right,
+            ))
+        } else {
+            area
+        });
     }
     if let Some(id) = s.hover_card_key()
         && let Some(key) = sess.repo.key(id)
@@ -420,6 +439,26 @@ fn bulk_bar(sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
         )
 }
 
+/// A small floating button in the list's lower corner that glides it back to the top.
+fn to_top(k: &Kit, scroll_key: &'static str, right: f32) -> El {
+    el().key("scroll-top")
+        .role("button")
+        .label("Back to top")
+        .help("Back to top")
+        .focusable(true)
+        .pin(None, None, Some(right), Some(14.0))
+        .size(34.0, 34.0)
+        .radius(17.0)
+        .center()
+        .fill(k.c.surface_raised)
+        .hover(k.c.surface_raised.mix(k.c.text_strong, 0.08))
+        .border(1.0, k.c.border_weak)
+        .shadow(2.0, 10.0, k.c.black.alpha(0.25))
+        .cursor(rune::Cursor::Pointer)
+        .on_press_tx(move |_: &mut AppState, tx: &mut Tx| tx.scroll_to(scroll_key, 0.0, 0.0))
+        .child(rune::icon(k.glyph.chevron_up, 16.0).color(k.c.text_base))
+}
+
 /// The Steam actions, folded into one menu so the header fits beside the editor.
 fn steam_menu(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> El {
     let busy = s.steam_busy();
@@ -455,6 +494,16 @@ fn steam_menu(s: &AppState, sess: &Session, k: &Kit, overlays: &mut Vec<El>) -> 
                 .on_select(move |s: &mut AppState| {
                     close(s);
                     s.match_missing(&[]);
+                }),
+        )
+        .item(
+            MenuItem::new("Review unmatched…")
+                .key("steam-review")
+                .description("Pick the game for keys without an exact match")
+                .disabled(busy)
+                .on_select(move |s: &mut AppState| {
+                    close(s);
+                    s.reopen_review();
                 }),
         )
         .item(
